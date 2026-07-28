@@ -283,6 +283,7 @@ class MacroWorker(QThread):
         self.gold_count_committed = None
         self.gold_disposal_stage = None
         self.gold_disposal_started_at = 0.0
+        self.gold_disposal_cooldown_until = 0.0
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -805,6 +806,7 @@ class MacroWorker(QThread):
         self.gold_count_committed = None
         self.gold_disposal_stage = None
         self.gold_disposal_started_at = 0.0
+        self.gold_disposal_cooldown_until = time.time() + 30.0
         self.log_signal.emit(
             f"[ระบบทอง] เป้าหมายทิ้งรอบใหม่: "
             f"{self.gold_discard_target}/40"
@@ -912,6 +914,65 @@ class MacroWorker(QThread):
             self.log_signal.emit(f"[Auto-Feed Error] Focus game failed: {e}")
             return None
 
+    def is_inventory_open(self, bg_img=None):
+        """Detect an open inventory from known item artwork inside its region."""
+        if bg_img is None:
+            bg_img = self.capture_background(self.hwnd)
+        if bg_img is None:
+            return False
+        h_img, w_img = bg_img.shape[:2]
+        scaled_bag = self.get_scaled_region(self.bag_region)
+        x_range = (
+            scaled_bag[0] / w_img,
+            (scaled_bag[0] + scaled_bag[2]) / w_img
+        ) if scaled_bag else (0.25, 0.90)
+        y_range = (
+            scaled_bag[1] / h_img,
+            (scaled_bag[1] + scaled_bag[3]) / h_img
+        ) if scaled_bag else (0.10, 0.95)
+        for template_path, threshold in (
+            ("templates/gold_ore.png", 0.65),
+            ("templates/diamond_icon.png", 0.78),
+            ("templates/gold.png", 0.65),
+        ):
+            result = self.find_image(
+                bg_img, template_path, threshold,
+                x_range=x_range, y_range=y_range
+            )
+            if result and result[0] is not None:
+                return True
+        return False
+
+    def ensure_inventory_open(self, log_prefix="[ระบบ]"):
+        if self.is_inventory_open():
+            self.log_signal.emit(f"{log_prefix} กระเป๋าเปิดอยู่แล้ว ไม่กด T ซ้ำ")
+            return True
+        self.log_signal.emit(f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังกด T...")
+        send_key_direct("t")
+        time.sleep(1.2)
+        opened = self.is_inventory_open()
+        if opened:
+            self.log_signal.emit(f"{log_prefix} ตรวจสอบแล้ว: เปิดกระเป๋าสำเร็จ")
+        else:
+            self.log_signal.emit(
+                f"{log_prefix} ส่งปุ่ม T แล้ว แต่ยังตรวจไม่พบหน้ากระเป๋า"
+            )
+        return opened
+
+    def ensure_inventory_closed(self, log_prefix="[ระบบ]"):
+        if not self.is_inventory_open():
+            self.log_signal.emit(f"{log_prefix} กระเป๋าปิดอยู่แล้ว")
+            return True
+        self.log_signal.emit(f"{log_prefix} พบว่ากระเป๋าเปิดอยู่ กำลังกด T เพื่อปิด...")
+        send_key_direct("t")
+        time.sleep(1.0)
+        closed = not self.is_inventory_open()
+        if closed:
+            self.log_signal.emit(f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ")
+        else:
+            self.log_signal.emit(f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จ")
+        return closed
+
     def measure_hud_levels(self, hud_crop):
         """Return food/water pixels for the server's stacked red/blue HUD."""
         hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
@@ -1004,9 +1065,7 @@ class MacroWorker(QThread):
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 time.sleep(2.0)
-        self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-        send_key_direct("t")
-        time.sleep(1.0)
+        self.ensure_inventory_open("[ระบบป้อนอาหาร]")
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
             except: pass
@@ -1146,9 +1205,11 @@ class MacroWorker(QThread):
             return False
         # X safely cancels the current farming animation. A blind Esc can open
         # GTA's pause menu and eventually navigate into Rockstar Editor.
-        self.log_signal.emit("[ระบบเก็บเพชร] ปิดกระเป๋าก่อนเปิดเมนูรถ (ปุ่ม T)...")
-        send_key_direct("t")
-        time.sleep(1.0)
+        if not self.ensure_inventory_closed("[ระบบเก็บเพชร]"):
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ยกเลิกรอบ เพราะตรวจว่ายังปิดกระเป๋าไม่ได้"
+            )
+            return False
         send_key_direct("x")
         time.sleep(1.0)
         send_key_direct("h")
@@ -1168,7 +1229,7 @@ class MacroWorker(QThread):
                 time.sleep(4.0)
         if not trunk_opened:
             self.log_signal.emit("[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ ยกเลิกรอบนี้")
-            send_key_direct("t")
+            self.ensure_inventory_open("[ระบบเก็บเพชร]")
             if orig_pos:
                 try: win32api.SetCursorPos(orig_pos)
                 except Exception: pass
@@ -1234,8 +1295,7 @@ class MacroWorker(QThread):
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 time.sleep(2.0)
-        send_key_direct("t")
-        time.sleep(1.0)
+        self.ensure_inventory_open("[ระบบเก็บเพชร]")
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
             except: pass
@@ -1495,7 +1555,10 @@ class MacroWorker(QThread):
                 gold_x, gold_y = self.get_region_ranges(self.gold_search_region, w_img, h_img, (0.25, 0.85), (0.15, 0.90))
                 ore_result = self.find_image(bg_img, gold_ore_path, 0.72, x_range=gold_x, y_range=gold_y)
                 if ore_result: preview_ore_score = ore_result[2]
-                if ore_result and ore_result[0] is not None:
+                if (
+                    ore_result and ore_result[0] is not None
+                    and time.time() >= self.gold_disposal_cooldown_until
+                ):
                     ore_x, ore_y, ore_val = ore_result
                     h_img, w_img, _ = bg_img.shape
                     abs_ore_path = self.resolve_template_path(gold_ore_path)
