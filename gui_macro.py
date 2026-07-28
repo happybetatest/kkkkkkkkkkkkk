@@ -928,20 +928,20 @@ class MacroWorker(QThread):
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
         red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
-        hunger_px = int(np.count_nonzero(red_mask))
-        thirst_px = int(np.count_nonzero(blue_mask))
-        if hunger_px == 0 and thirst_px == 0:
-            pink_mask = cv2.inRange(
-                hsv, np.array([130, 45, 70]), np.array([170, 255, 255])
-            )
-            pink_mask = cv2.morphologyEx(
-                pink_mask, cv2.MORPH_OPEN, kernel
-            )
-            crop_w = pink_mask.shape[1]
-            hunger_px = int(np.count_nonzero(pink_mask[:, :crop_w // 2]))
-            thirst_px = int(np.count_nonzero(pink_mask[:, crop_w // 2:]))
+        pink_mask = cv2.inRange(
+            hsv, np.array([130, 45, 70]), np.array([169, 255, 255])
+        )
+        pink_mask = cv2.morphologyEx(pink_mask, cv2.MORPH_OPEN, kernel)
+        crop_w = pink_mask.shape[1]
+        pink_food = int(np.count_nonzero(pink_mask[:, :crop_w // 2]))
+        pink_water = int(np.count_nonzero(pink_mask[:, crop_w // 2:]))
+        if pink_food >= 5 and pink_water >= 5:
+            hunger_px = pink_food
+            thirst_px = pink_water
             preview_mask = pink_mask
         else:
+            hunger_px = int(np.count_nonzero(red_mask))
+            thirst_px = int(np.count_nonzero(blue_mask))
             preview_mask = cv2.bitwise_or(red_mask, blue_mask)
         return hunger_px, thirst_px, preview_mask
 
