@@ -5,6 +5,7 @@ import ctypes
 import json
 import ssl
 import urllib.request
+import random
 import numpy as np
 import cv2
 import win32gui
@@ -273,6 +274,13 @@ class MacroWorker(QThread):
         self.last_runtime_error = ""
         self.last_runtime_error_time = 0.0
         self.last_gold_debug_capture_time = 0.0
+        self.gold_discard_target = None
+        self.previous_gold_discard_target = None
+        self.gold_estimated_count = 0
+        self.gold_count_synced = False
+        self.gold_count_candidate = None
+        self.gold_count_candidate_streak = 0
+        self.gold_count_committed = None
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -654,13 +662,13 @@ class MacroWorker(QThread):
                     if area >= 5 and min_h <= gh <= max_h and gw >= 2:
                         live_glyphs.append((gx, gy, gw, gh, area))
                 live_glyphs.sort(key=lambda item: item[0])
-                if len(live_glyphs) >= 4:
+                if len(live_glyphs) >= 5:
                     first_live = live_glyphs[0]
                     row_glyphs = [
                         item for item in live_glyphs
                         if abs(item[1] - first_live[1]) <= max(2, int(round(2 * sy)))
                     ]
-                    if len(row_glyphs) >= 4:
+                    if len(row_glyphs) >= 5:
                         gx, gy, gw, gh, _ = first_live
                         live_digit = live_gray[gy:gy + gh, gx:gx + gw]
                         digit_scores = []
@@ -779,6 +787,82 @@ class MacroWorker(QThread):
             return (None, None, max(0.0, best_val), search_img)
         except Exception:
             return None
+
+    def choose_next_gold_target(self):
+        choices = [
+            value for value in range(15, 31)
+            if self.previous_gold_discard_target is None
+            or abs(value - self.previous_gold_discard_target) > 3
+        ]
+        self.gold_discard_target = random.choice(choices)
+        self.previous_gold_discard_target = self.gold_discard_target
+        self.gold_estimated_count = 0
+        self.gold_count_synced = True
+        self.gold_count_candidate = None
+        self.gold_count_candidate_streak = 0
+        self.gold_count_committed = None
+        self.log_signal.emit(
+            f"[ระบบทอง] เป้าหมายทิ้งรอบใหม่: "
+            f"{self.gold_discard_target}/40"
+        )
+
+    def observe_gold_count_change(self, bg_img, ore_x, ore_y):
+        """Count stable numerator changes after a confirmed all-item disposal."""
+        if not self.gold_count_synced:
+            return None
+        try:
+            h_img, w_img = bg_img.shape[:2]
+            ore_path = self.resolve_template_path("templates/gold_ore.png")
+            sx, sy = self.get_template_scale(ore_path, w_img, h_img)
+            x0 = max(0, ore_x)
+            x1 = min(w_img, ore_x + max(24, int(round(45 * sx))))
+            y0 = max(0, ore_y - max(20, int(round(55 * sy))))
+            y1 = min(h_img, ore_y - max(5, int(round(15 * sy))))
+            strip = bg_img[y0:y1, x0:x1]
+            if strip.size == 0:
+                return self.gold_estimated_count
+            gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
+            count, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+            glyphs = []
+            min_h = max(3, int(round(4 * sy)))
+            max_h = max(min_h + 1, int(round(12 * sy)))
+            for index in range(1, count):
+                gx, gy, gw, gh, area = map(int, stats[index])
+                if area >= 5 and min_h <= gh <= max_h and gw >= 2:
+                    glyphs.append((gx, gy, gw, gh))
+            glyphs.sort(key=lambda item: item[0])
+            if len(glyphs) < 4:
+                return self.gold_estimated_count
+            first_y = glyphs[0][1]
+            row = [
+                item for item in glyphs
+                if abs(item[1] - first_y) <= max(2, int(round(2 * sy)))
+            ]
+            if len(row) < 4:
+                return self.gold_estimated_count
+            rx0 = max(0, min(item[0] for item in row) - 1)
+            ry0 = max(0, min(item[1] for item in row) - 1)
+            rx1 = min(binary.shape[1], max(item[0] + item[2] for item in row) + 1)
+            ry1 = min(binary.shape[0], max(item[1] + item[3] for item in row) + 1)
+            signature_crop = binary[ry0:ry1, rx0:rx1]
+            signature = cv2.resize(
+                signature_crop, (48, 14), interpolation=cv2.INTER_NEAREST
+            ).tobytes()
+            if signature != self.gold_count_candidate:
+                self.gold_count_candidate = signature
+                self.gold_count_candidate_streak = 1
+                return self.gold_estimated_count
+            self.gold_count_candidate_streak += 1
+            if (
+                self.gold_count_candidate_streak >= 2
+                and signature != self.gold_count_committed
+            ):
+                self.gold_count_committed = signature
+                self.gold_estimated_count += 1
+            return self.gold_estimated_count
+        except Exception:
+            return self.gold_estimated_count
 
     def activate_game_window(self):
         try:
@@ -1364,6 +1448,7 @@ class MacroWorker(QThread):
                             self.match_signal.emit(match_status)
                             self.bg_click(self.hwnd, x_conf, y_conf)
                             time.sleep(self.delays["confirm"])
+                            self.choose_next_gold_target()
                     continue
                 else:
                     match_status["all"], match_status["confirm"] = (False, all_result[2] if all_result else 0.0), (False, 0.0)
@@ -1405,8 +1490,26 @@ class MacroWorker(QThread):
                     # threshold while still requiring the actual "30/40" glyphs.
                     target_thresh = max(0.76, min(float(self.thresholds["gold"]), 0.84))
                     preview_target_thresh = target_thresh
+                    estimated_count = self.observe_gold_count_change(
+                        bg_img, ore_x, ore_y
+                    )
+                    random_target_reached = (
+                        estimated_count is not None
+                        and self.gold_discard_target is not None
+                        and estimated_count >= self.gold_discard_target
+                    )
                     count_result = self.find_gold_count(bg_img, ore_x, ore_y, target_thresh)
-                    if count_result:
+                    if count_result or random_target_reached:
+                        if random_target_reached:
+                            count_result = (
+                                ore_x, ore_y, 1.0,
+                                np.zeros((10, 10, 3), dtype=np.uint8)
+                            )
+                            self.log_signal.emit(
+                                f"[ระบบทอง] ถึงเป้าหมายสุ่ม "
+                                f"{self.gold_discard_target}/40 "
+                                f"กำลังทิ้งทอง"
+                            )
                         count_x, count_y, count_score, count_crop = count_result
                         preview_text_score = count_score
                         preview_text_img = count_crop
