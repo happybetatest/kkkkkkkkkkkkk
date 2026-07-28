@@ -573,7 +573,7 @@ class MacroWorker(QThread):
             return None
 
     def find_gold_count(self, bg_img, ore_x, ore_y, threshold):
-        """Require the numerator "30" directly above the detected gold ore."""
+        """Require a numerator of 30 or 40 directly above the detected gold ore."""
         try:
             template_path = self.resolve_template_path("templates/gold_text.png")
             template = cv2.imread(template_path)
@@ -605,6 +605,12 @@ class MacroWorker(QThread):
                 first_digit_y:first_digit_y + first_digit_h,
                 first_digit_x:first_digit_x + first_digit_w
             ]
+            last_x, last_y, last_w, last_h, _ = components[-1]
+            four_w = min(last_w, max(first_digit_w + 1, last_w // 2))
+            fourth_digit_template = upper[
+                last_y:last_y + last_h,
+                last_x:last_x + four_w
+            ]
             tx = min(item[0] for item in first_two)
             ty = min(item[1] for item in first_two)
             tx_end = max(item[0] + item[2] for item in first_two)
@@ -616,6 +622,9 @@ class MacroWorker(QThread):
             numerator_template = upper[ty0:ty1, tx0:tx1]
             if numerator_template.size == 0:
                 return None
+            full_x0 = max(0, last_x - pad)
+            full_x1 = min(upper.shape[1], last_x + last_w + pad)
+            full_numerator_template = upper[ty0:ty1, full_x0:full_x1]
 
             h_img, w_img = bg_img.shape[:2]
             ore_path = self.resolve_template_path("templates/gold_ore.png")
@@ -623,7 +632,8 @@ class MacroWorker(QThread):
             # Search only the count area of this inventory slot. The old wide
             # rectangle could accidentally use a "30" from a neighbouring item.
             x0 = max(0, ore_x - max(4, int(round(10 * sx))))
-            x1 = min(w_img, ore_x + max(12, int(round(50 * sx))))
+            # Keep the constant denominator "/40" outside the search area.
+            x1 = min(w_img, ore_x + max(8, int(round(14 * sx))))
             y0 = max(0, ore_y - max(12, int(round(55 * sy))))
             y1 = min(h_img, ore_y + max(3, int(round(8 * sy))))
             search_img = bg_img[y0:y1, x0:x1]
@@ -636,22 +646,26 @@ class MacroWorker(QThread):
             scale_offsets = (1.0, 0.90, 1.10, 0.82, 1.18, 0.76, 1.24)
             search_gray = cv2.cvtColor(search_img, cv2.COLOR_BGR2GRAY)
             best_val, best_loc, best_size = -1.0, None, None
+            best_template = numerator_template
             seen_sizes = set()
-            for nearby in scale_offsets:
-                new_w = max(4, int(round(numerator_template.shape[1] * scale_x * nearby)))
-                new_h = max(3, int(round(numerator_template.shape[0] * scale_y * nearby)))
-                if (new_w, new_h) in seen_sizes:
-                    continue
-                seen_sizes.add((new_w, new_h))
-                if search_gray.shape[0] < new_h or search_gray.shape[1] < new_w:
-                    continue
-                interpolation = cv2.INTER_AREA if new_w < numerator_template.shape[1] or new_h < numerator_template.shape[0] else cv2.INTER_CUBIC
-                scaled = cv2.resize(numerator_template, (new_w, new_h), interpolation=interpolation)
-                scaled_gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
-                result = cv2.matchTemplate(search_gray, scaled_gray, cv2.TM_CCOEFF_NORMED)
-                _, score, _, location = cv2.minMaxLoc(result)
-                if score > best_val:
-                    best_val, best_loc, best_size = score, location, (new_w, new_h)
+            for count_template in (numerator_template, full_numerator_template):
+                for nearby in scale_offsets:
+                    new_w = max(4, int(round(count_template.shape[1] * scale_x * nearby)))
+                    new_h = max(3, int(round(count_template.shape[0] * scale_y * nearby)))
+                    size_key = (id(count_template), new_w, new_h)
+                    if size_key in seen_sizes:
+                        continue
+                    seen_sizes.add(size_key)
+                    if search_gray.shape[0] < new_h or search_gray.shape[1] < new_w:
+                        continue
+                    interpolation = cv2.INTER_AREA if new_w < count_template.shape[1] or new_h < count_template.shape[0] else cv2.INTER_CUBIC
+                    scaled = cv2.resize(count_template, (new_w, new_h), interpolation=interpolation)
+                    scaled_gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+                    result = cv2.matchTemplate(search_gray, scaled_gray, cv2.TM_CCOEFF_NORMED)
+                    _, score, _, location = cv2.minMaxLoc(result)
+                    if score > best_val:
+                        best_val, best_loc, best_size = score, location, (new_w, new_h)
+                        best_template = count_template
 
             if best_loc is None:
                 return (None, None, 0.0, search_img)
@@ -659,8 +673,8 @@ class MacroWorker(QThread):
             # "20" can still resemble "30" when both tiny digits are matched
             # together because the trailing zero is identical. Verify the first
             # glyph independently: a 3 must match the saved 3 shape, not a 2.
-            matched_scale_x = best_size[0] / float(numerator_template.shape[1])
-            matched_scale_y = best_size[1] / float(numerator_template.shape[0])
+            matched_scale_x = best_size[0] / float(best_template.shape[1])
+            matched_scale_y = best_size[1] / float(best_template.shape[0])
             digit_w = max(2, int(round(first_digit_template.shape[1] * matched_scale_x)))
             digit_h = max(3, int(round(first_digit_template.shape[0] * matched_scale_y)))
             digit_offset_x = int(round((first_digit_x - tx0) * matched_scale_x))
@@ -669,6 +683,7 @@ class MacroWorker(QThread):
             digit_y0 = best_loc[1] + digit_offset_y
             digit_crop = search_gray[digit_y0:digit_y0 + digit_h, digit_x0:digit_x0 + digit_w]
             first_digit_score = -1.0
+            fourth_digit_score = -1.0
             if digit_crop.shape == (digit_h, digit_w):
                 digit_interpolation = cv2.INTER_AREA if digit_w < first_digit_template.shape[1] or digit_h < first_digit_template.shape[0] else cv2.INTER_CUBIC
                 scaled_digit = cv2.resize(first_digit_template, (digit_w, digit_h), interpolation=digit_interpolation)
@@ -676,11 +691,28 @@ class MacroWorker(QThread):
                 if float(np.std(scaled_digit_gray)) > 0.5:
                     digit_result = cv2.matchTemplate(digit_crop, scaled_digit_gray, cv2.TM_CCOEFF_NORMED)
                     _, first_digit_score, _, _ = cv2.minMaxLoc(digit_result)
+                scaled_four = cv2.resize(
+                    fourth_digit_template, (digit_w, digit_h),
+                    interpolation=cv2.INTER_AREA
+                    if digit_w < fourth_digit_template.shape[1]
+                    or digit_h < fourth_digit_template.shape[0]
+                    else cv2.INTER_CUBIC
+                )
+                scaled_four_gray = cv2.cvtColor(scaled_four, cv2.COLOR_BGR2GRAY)
+                if float(np.std(scaled_four_gray)) > 0.5:
+                    four_result = cv2.matchTemplate(
+                        digit_crop, scaled_four_gray, cv2.TM_CCOEFF_NORMED
+                    )
+                    _, fourth_digit_score, _, _ = cv2.minMaxLoc(four_result)
 
             tw, th = best_size
             center_x = x0 + best_loc[0] + tw // 2
             center_y = y0 + best_loc[1] + th // 2
-            if best_val >= threshold and first_digit_score >= 0.72:
+            first_is_full = (
+                best_template is full_numerator_template
+                or max(first_digit_score, fourth_digit_score) >= 0.72
+            )
+            if best_val >= threshold and first_is_full:
                 return (center_x, center_y, best_val, search_img)
             return (None, None, max(0.0, best_val), search_img)
         except Exception:
