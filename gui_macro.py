@@ -256,6 +256,7 @@ class MacroWorker(QThread):
         self.force_store_test = False
         self.last_hud_check_time = 0.0
         self.last_feeding_attempt_time = 0.0
+        self.feeding_cooldown_until = 0.0
         self.last_diamond_check_time = 0.0
         self.last_diamond_storage_time = 0.0
         self.diamond_pass_streak = 0
@@ -920,12 +921,22 @@ class MacroWorker(QThread):
         need_food, need_water = hunger_px < self.hunger_limit, thirst_px < self.thirst_limit
         if need_food or need_water:
             now = time.time()
-            # A failed focus used to retrigger every loop and spam keys for
-            # hours.  Limit attempts even when the HUD still reads low.
+            # A successful feeding needs a long grace period. Some servers
+            # update the HUD slowly, and an obscured/mis-cropped HUD can remain
+            # at zero; retrying every minute repeatedly consumes slots 6/7.
+            if now < self.feeding_cooldown_until:
+                return
+            # Failed focus attempts may retry sooner, but still never every
+            # worker loop.
             if now - self.last_feeding_attempt_time < 60.0:
                 return
             self.last_feeding_attempt_time = now
-            self.execute_feeding_sequence(need_food, need_water)
+            fed_successfully = self.execute_feeding_sequence(
+                need_food, need_water
+            )
+            self.feeding_cooldown_until = time.time() + (
+                600.0 if fed_successfully else 60.0
+            )
             self.last_hud_check_time = time.time()
 
     def double_click_at(self, abs_x, abs_y):
