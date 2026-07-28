@@ -82,6 +82,7 @@
     "thirst_limit": 10,
     "auto_feed_enabled": true,
     "auto_store_enabled": true,
+    "dark_mode": false,
     "diamond_mode": "car_timer",
     "diamond_interval_minutes": 20,
     "reference_resolution": [

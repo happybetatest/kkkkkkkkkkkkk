@@ -169,6 +169,48 @@ class RegionSelector(QWidget):
             self.close_callback()
         event.accept()
 
+
+class ToggleSwitch(QCheckBox):
+    """Compact ON/OFF switch that keeps the familiar checkbox behavior."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(32)
+
+    def hitButton(self, position):
+        # The native QCheckBox hit area still points at its hidden indicator.
+        # Treat the complete custom row, including the pill on the right, as
+        # clickable.
+        return self.isEnabled() and self.rect().contains(position)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        text_color = self.palette().color(self.foregroundRole())
+        painter.setPen(text_color)
+        text_rect = self.rect().adjusted(0, 0, -64, 0)
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
+
+        track = QRect(self.width() - 56, 4, 52, 26)
+        track_color = QColor("#18c37e" if self.isChecked() else "#4b505a")
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(track_color)
+        painter.drawRoundedRect(track, 13, 13)
+
+        knob_x = track.right() - 23 if self.isChecked() else track.left() + 3
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(knob_x, track.top() + 3, 20, 20)
+
+        painter.setPen(QColor("#ffffff" if self.isChecked() else "#d2d5da"))
+        label = "ON" if self.isChecked() else "OFF"
+        label_rect = QRect(
+            track.left() + (5 if self.isChecked() else 25),
+            track.top(), 24, track.height()
+        )
+        painter.drawText(label_rect, Qt.AlignCenter, label)
+
+
 WINDOW_NAME = "FiveM"
 TEMPLATES = {
     "gold": "templates/gold.png",
@@ -893,11 +935,15 @@ class MacroWorker(QThread):
             return False
         # X safely cancels the current farming animation. A blind Esc can open
         # GTA's pause menu and eventually navigate into Rockstar Editor.
+        self.log_signal.emit("[ระบบเก็บเพชร] ปิดกระเป๋าก่อนเปิดเมนูรถ (ปุ่ม T)...")
+        send_key_direct("t")
+        time.sleep(1.0)
         send_key_direct("x")
         time.sleep(1.0)
         send_key_direct("h")
         time.sleep(1.5)
         trunk_opened = False
+        stored_successfully = False
         bg_img = self.capture_background(self.hwnd)
         if bg_img is not None:
             h_img, w_img, _ = bg_img.shape
@@ -909,6 +955,13 @@ class MacroWorker(QThread):
                 self.double_click_at(screen_x, screen_y)
                 trunk_opened = True
                 time.sleep(4.0)
+        if not trunk_opened:
+            self.log_signal.emit("[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ ยกเลิกรอบนี้")
+            send_key_direct("t")
+            if orig_pos:
+                try: win32api.SetCursorPos(orig_pos)
+                except Exception: pass
+            return False
         bg_trunk = self.capture_background(self.hwnd)
         if bg_trunk is not None:
             h_img, w_img, _ = bg_trunk.shape
@@ -948,6 +1001,9 @@ class MacroWorker(QThread):
                                 time.sleep(0.05)
                                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                                 time.sleep(1.5)
+                                stored_successfully = True
+        if not stored_successfully:
+            self.log_signal.emit("[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ")
         if trunk_opened:
             send_key_direct("esc")
             time.sleep(1.0)
@@ -972,8 +1028,9 @@ class MacroWorker(QThread):
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
             except: pass
-        self.log_signal.emit("[ระบบเก็บเพชร] เสร็จสิ้น!")
-        return True
+        if stored_successfully:
+            self.log_signal.emit("[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!")
+        return stored_successfully
 
     def check_and_run_store_diamonds(self, trigger_storage=False):
         bg_img = self.capture_background(self.hwnd)
@@ -1061,6 +1118,15 @@ class MacroWorker(QThread):
             y0, y1 = max(0, dy - preview_size // 2), min(h_img, dy + preview_size // 2)
             slot_img = bg_img[y0:y1, x0:x1]
             if elapsed >= interval_seconds:
+                now = time.time()
+                if now - self.last_diamond_storage_time < 120.0:
+                    retry_in = int(120.0 - (now - self.last_diamond_storage_time))
+                    self.diamond_preview_signal.emit(
+                        slot_img, val, False,
+                        f"เก็บไม่สำเร็จ รอลองใหม่อีก {retry_in} วินาที"
+                    )
+                    return
+                self.last_diamond_storage_time = now
                 self.diamond_preview_signal.emit(
                     slot_img, val, True,
                     f"ครบ {self.diamond_interval_minutes} นาที กำลังเก็บเพชรเข้ารถ"
@@ -1272,26 +1338,9 @@ class MainWindow(QMainWindow):
         self.private_settings_path = get_writable_path("private-settings.json")
         self.load_config()
         self.load_private_settings()
-        self.setWindowTitle("ระบบมาโครทิ้งทองอัตโนมัติ (Background)")
-        self.resize(760, 580)
-        self.setStyleSheet("""
-            QMainWindow { background-color: #f8fafc; }
-            QWidget { color: #334155; font-family: 'Segoe UI', sans-serif; }
-            QGroupBox { border: 1px solid #cbd5e1; border-radius: 8px; margin-top: 15px; font-weight: bold; font-size: 13px; color: #475569; background-color: #ffffff; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            QFrame#Card { background-color: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; }
-            QLabel { font-size: 12px; }
-            QLabel#Title { font-size: 18px; font-weight: bold; color: #1e293b; }
-            QPushButton { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-weight: bold; font-size: 11px; padding: 6px 10px; }
-            QPushButton:hover { background-color: #f1f5f9; border: 1px solid #94a3b8; }
-            QPushButton#StartBtn { background-color: #0d9488; border: none; border-radius: 6px; color: white; font-weight: bold; font-size: 14px; padding: 12px; }
-            QPushButton#StartBtn:hover { background-color: #0f766e; }
-            QPushButton#StartBtn[running="true"] { background-color: #ef4444; }
-            QSlider::groove:horizontal { border: 1px solid #cbd5e1; height: 5px; background: #e2e8f0; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #0d9488; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
-            QSlider::sub-page:horizontal { background: #0d9488; border-radius: 2px; }
-            QTextEdit#Log { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 11px; }
-        """)
+        self.setWindowTitle("FiveM Farming Control")
+        self.resize(980, 700)
+        self.setMinimumSize(900, 640)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1300,10 +1349,10 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(12)
 
         header_layout = QHBoxLayout()
-        title_label = QLabel("มาโครทิ้งทอง FiveM Background")
+        title_label = QLabel("Farming Control")
         title_label.setObjectName("Title")
         self.status_bar = QFrame()
-        self.status_bar.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 4px 12px; }")
+        self.status_bar.setObjectName("StatusBar")
         status_bar_layout = QHBoxLayout(self.status_bar)
         status_bar_layout.setContentsMargins(5, 2, 5, 2)
         self.status_dot = QLabel("⬤")
@@ -1313,6 +1362,11 @@ class MainWindow(QMainWindow):
         status_bar_layout.addWidget(self.status_text)
         header_layout.addWidget(title_label)
         header_layout.addStretch()
+        self.dark_mode_cb = ToggleSwitch("โหมดมืด")
+        self.dark_mode_cb.setMinimumWidth(145)
+        self.dark_mode_cb.setChecked(self.dark_mode)
+        self.dark_mode_cb.toggled.connect(self.on_dark_mode_toggled)
+        header_layout.addWidget(self.dark_mode_cb)
         header_layout.addWidget(self.status_bar)
         main_layout.addLayout(header_layout)
 
@@ -1322,14 +1376,20 @@ class MainWindow(QMainWindow):
         left_column = QVBoxLayout()
         left_column.setSpacing(10)
         
-        left_tabs = QTabWidget()
+        self.left_tabs = QTabWidget()
         
         # Tab 1: Configuration
-        tab_config = QWidget()
-        config_tab_layout = QVBoxLayout(tab_config)
+        tab_config = QScrollArea()
+        tab_config.setWidgetResizable(True)
+        tab_config.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tab_config.setFrameShape(QFrame.NoFrame)
+        config_scroll_content = QWidget()
+        config_tab_layout = QVBoxLayout(config_scroll_content)
+        config_tab_layout.setContentsMargins(6, 6, 6, 10)
         config_tab_layout.setSpacing(8)
+        tab_config.setWidget(config_scroll_content)
         
-        setup_box = QGroupBox("ตั้งค่าขอบเขตพิกัดหน้าต่างเกม")
+        setup_box = QGroupBox("พื้นที่ตรวจจับ")
         setup_layout = QVBoxLayout(setup_box)
         setup_layout.setSpacing(8)
         self.hud_lbl = QLabel(self.get_region_text(self.hud_region))
@@ -1357,7 +1417,7 @@ class MainWindow(QMainWindow):
         setup_layout.addWidget(af_btn)
         config_tab_layout.addWidget(setup_box)
 
-        sliders_box = QGroupBox("เกณฑ์ขั้นต่ำหลอดอาหาร/น้ำ (พิกเซลสีชมพู)")
+        sliders_box = QGroupBox("เกณฑ์อาหารและน้ำ")
         sliders_layout = QVBoxLayout(sliders_box)
         sliders_layout.addWidget(QLabel("เกณฑ์หลอดอาหาร (หากน้อยกว่าจะกิน):"))
         self.hunger_val_lbl = QLabel(f"{self.hunger_limit}")
@@ -1377,7 +1437,7 @@ class MainWindow(QMainWindow):
         sliders_layout.addWidget(thirst_slider)
         config_tab_layout.addWidget(sliders_box)
 
-        roi_box = QGroupBox("ระบบทดสอบการทำงาน")
+        roi_box = QGroupBox("ทดสอบระบบ")
         roi_layout = QVBoxLayout(roi_box)
         self.test_feed_btn = QPushButton("ทดสอบระบบกินข้าว/น้ำ")
         self.test_feed_btn.setStyleSheet("QPushButton { background-color: #0284c7; border: none; color: white; font-weight: bold; font-size: 12px; border-radius: 6px; padding: 8px; }")
@@ -1389,12 +1449,12 @@ class MainWindow(QMainWindow):
         roi_layout.addWidget(self.test_store_btn)
         config_tab_layout.addWidget(roi_box)
 
-        toggle_box = QGroupBox("เปิด/ปิดฟังก์ชัน")
+        toggle_box = QGroupBox("การทำงานอัตโนมัติ")
         toggle_layout = QVBoxLayout(toggle_box)
-        self.auto_feed_cb = QCheckBox("ระบบกินข้าว/น้ำอัตโนมัติ")
+        self.auto_feed_cb = ToggleSwitch("ระบบกินข้าว/น้ำอัตโนมัติ")
         self.auto_feed_cb.setChecked(self.auto_feed_enabled)
         self.auto_feed_cb.toggled.connect(self.on_auto_feed_toggled)
-        self.auto_store_cb = QCheckBox("เปิดระบบจัดการเพชรอัตโนมัติ")
+        self.auto_store_cb = ToggleSwitch("เปิดระบบจัดการเพชรอัตโนมัติ")
         self.auto_store_cb.setChecked(self.auto_store_enabled)
         self.auto_store_cb.toggled.connect(self.on_auto_store_toggled)
         self.diamond_mode_combo = QComboBox()
@@ -1429,9 +1489,9 @@ class MainWindow(QMainWindow):
         def create_crop_row(layout, label_text, template_name, region_key):
             row_layout = QHBoxLayout()
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("font-weight: bold; color: #475569; font-size: 11px;")
+            lbl.setStyleSheet("font-weight: bold; font-size: 11px;")
             lbl.setMinimumWidth(180)
-            btn_preview = QPushButton("👁️")
+            btn_preview = QPushButton("ดู")
             btn_preview.setFixedWidth(30)
             btn_preview.setToolTip("พรีวิวรูปที่ครอปไว้")
             btn_preview.setStyleSheet("QPushButton { font-size: 14px; padding: 2px; }")
@@ -1440,7 +1500,7 @@ class MainWindow(QMainWindow):
             btn_crop.setStyleSheet("QPushButton { font-size: 11px; padding: 4px; }")
             btn_crop.clicked.connect(lambda checked=False, tn=template_name: self.crop_template_wizard(tn))
             btn_reg = QPushButton("พื้นที่สแกน")
-            btn_reg.setStyleSheet("QPushButton { font-size: 11px; padding: 4px; background-color: #f8fafc; border: 1px solid #cbd5e1; }")
+            btn_reg.setStyleSheet("QPushButton { font-size: 11px; padding: 4px; }")
             btn_reg.clicked.connect(lambda checked=False, rk=region_key: self.select_item_search_region(rk))
             row_layout.addWidget(lbl)
             row_layout.addWidget(btn_preview)
@@ -1448,7 +1508,7 @@ class MainWindow(QMainWindow):
             row_layout.addWidget(btn_reg)
             layout.addLayout(row_layout)
             
-        g_gold = QGroupBox("🔶 หมวดฟาร์มทอง (ในกระเป๋าตัวละคร)")
+        g_gold = QGroupBox("ทองในกระเป๋า")
         l_gold = QVBoxLayout(g_gold)
         create_crop_row(l_gold, "รูปแร่ทองคำ (ก้อนทอง):", "gold_ore.png", "gold_ore")
         create_crop_row(l_gold, "รูปตัวเลข (แร่ทอง):", "gold_text.png", "gold_text")
@@ -1457,12 +1517,12 @@ class MainWindow(QMainWindow):
         create_crop_row(l_gold, "ปุ่มตกลง (กระเป๋า):", "confirm.png", "confirm")
         crops_scroll_layout.addWidget(g_gold)
         
-        g_diamond = QGroupBox("💎 หมวดเพชร (ตรวจนับในกระเป๋า)")
+        g_diamond = QGroupBox("เพชรในกระเป๋า")
         l_diamond = QVBoxLayout(g_diamond)
         create_crop_row(l_diamond, "รูปเพชร (กระเป๋าตัวละคร):", "diamond_icon.png", "diamond")
         crops_scroll_layout.addWidget(g_diamond)
         
-        g_trunk = QGroupBox("🚗 หมวดเก็บลงท้ายรถ")
+        g_trunk = QGroupBox("พื้นที่เก็บของท้ายรถ")
         l_trunk = QVBoxLayout(g_trunk)
         create_crop_row(l_trunk, "รูปเพชร (ท้ายรถ):", "diamond_trunk.png", "diamond_trunk")
         create_crop_row(l_trunk, "ปุ่มเปิดท้ายรถ:", "trunk_ready.png", "trunk_ready")
@@ -1470,7 +1530,7 @@ class MainWindow(QMainWindow):
         create_crop_row(l_trunk, "ปุ่มตกลง (ท้ายรถ):", "confirm_trunk.png", "confirm_trunk")
         crops_scroll_layout.addWidget(g_trunk)
         
-        g_other = QGroupBox("⚙️ หมวดอื่นๆ")
+        g_other = QGroupBox("รายการอื่น")
         l_other = QVBoxLayout(g_other)
         create_crop_row(l_other, "ปุ่มเริ่มงาน (Auto Farm):", "auto_farm.png", "auto_farm")
         crops_scroll_layout.addWidget(g_other)
@@ -1483,9 +1543,9 @@ class MainWindow(QMainWindow):
         crops_scroll.setWidget(crops_scroll_content)
         crops_tab_layout.addWidget(crops_scroll)
         
-        left_tabs.addTab(tab_config, "ตั้งค่าพิกัด & เกณฑ์")
-        left_tabs.addTab(tab_crops, "ลงทะเบียนรูปภาพ (Crop)")
-        left_column.addWidget(left_tabs)
+        self.left_tabs.addTab(tab_config, "ตั้งค่าหลัก")
+        self.left_tabs.addTab(tab_crops, "รูปตรวจจับ")
+        left_column.addWidget(self.left_tabs)
 
         right_panel = QVBoxLayout()
         monitors_layout = QHBoxLayout()
@@ -1566,9 +1626,9 @@ class MainWindow(QMainWindow):
         diamond_data_layout.addWidget(self.lbl_diamond_score)
         diamond_data_layout.addWidget(self.lbl_diamond_status)
         diamond_layout.addLayout(diamond_data_layout)
-        self.preview_tabs.addTab(self.hud_tab, "พรีวิวหลอดอาหาร/น้ำ")
-        self.preview_tabs.addTab(self.gold_tab, "พรีวิวสแกนเศษทองคำ")
-        self.preview_tabs.addTab(self.diamond_tab, "พรีวิวสแกนเพชร")
+        self.preview_tabs.addTab(self.hud_tab, "อาหารและน้ำ")
+        self.preview_tabs.addTab(self.gold_tab, "ทอง")
+        self.preview_tabs.addTab(self.diamond_tab, "เพชร")
         right_panel.addWidget(self.preview_tabs)
 
         right_panel.addWidget(QLabel("บันทึกการทำงานของบอท:"))
@@ -1578,7 +1638,6 @@ class MainWindow(QMainWindow):
         right_panel.addWidget(self.log_console)
         content_layout.addLayout(left_column, 3)
         content_layout.addLayout(right_panel, 4)
-        main_layout.addLayout(content_layout)
 
         footer_layout = QHBoxLayout()
         self.start_btn = QPushButton("เริ่มทำงานบอท [F9]")
@@ -1586,10 +1645,12 @@ class MainWindow(QMainWindow):
         self.start_btn.setProperty("running", "false")
         self.start_btn.setMinimumHeight(45)
         self.start_btn.clicked.connect(self.toggle_macro)
-        instruct_lbl = QLabel("<b>คู่มือปุ่มลัด (Hotkey):</b><br>🟢 <b>[F9]</b> - เริ่ม / หยุดบอทชั่วคราว<br>🔴 <b>[F10]</b> - ปิดโปรแกรม")
-        instruct_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
+        self.instruct_lbl = QLabel("<b>ปุ่มลัด</b><br>F9  เริ่ม / หยุดชั่วคราว<br>F10  ปิดโปรแกรม")
+        self.instruct_lbl.setStyleSheet("font-size: 11px;")
         footer_layout.addWidget(self.start_btn, 3)
-        footer_layout.addWidget(instruct_lbl, 2)
+        footer_layout.addWidget(self.instruct_lbl, 2)
+
+        main_layout.addLayout(content_layout)
         main_layout.addLayout(footer_layout)
 
         self.worker = MacroWorker()
@@ -1605,7 +1666,65 @@ class MainWindow(QMainWindow):
 
         keyboard.add_hotkey("F9", self.toggle_macro)
         keyboard.add_hotkey("F10", self.close)
+        self.apply_theme()
         self.write_log("ยินดีต้อนรับสู่แผงควบคุมระบบฟาร์มทิ้งทองอัตโนมัติ (Background)")
+
+    def apply_theme(self):
+        if self.dark_mode:
+            colors = {
+                "window": "#111315", "panel": "#17191f", "card": "#1c1f26",
+                "field": "#14171a", "text": "#e7e9ec", "muted": "#9299a3",
+                "border": "#292d35", "hover": "#242832", "title": "#ffffff",
+            }
+        else:
+            colors = {
+                "window": "#f5f6f7", "panel": "#ffffff", "card": "#f0f2f4",
+                "field": "#ffffff", "text": "#252a31", "muted": "#737b86",
+                "border": "#dfe3e8", "hover": "#f0f2f4", "title": "#171a1f",
+            }
+        self.setStyleSheet(f"""
+            QMainWindow {{ background: {'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #252a35, stop:0.42 #111315, stop:1 #16254a)' if self.dark_mode else colors['window']}; }}
+            QWidget {{ color: {colors['text']}; font-family: 'Segoe UI', sans-serif; }}
+            QGroupBox {{ border: 1px solid {colors['border']}; border-radius: 10px; margin-top: 18px; font-weight: 600; font-size: 12px; color: {colors['text']}; background-color: {colors['panel']}; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
+            QFrame#Card {{ background-color: {colors['card']}; border: none; border-radius: 10px; }}
+            QFrame#StatusBar {{ background-color: {colors['panel']}; border: 1px solid {colors['border']}; border-radius: 14px; padding: 4px 12px; }}
+            QLabel {{ font-size: 12px; }}
+            QLabel#Title {{ font-size: 20px; font-weight: 700; color: {colors['title']}; }}
+            QPushButton {{ background-color: {colors['panel']}; border: 1px solid {colors['border']}; border-radius: 8px; font-weight: 600; font-size: 11px; padding: 7px 11px; }}
+            QPushButton:hover {{ background-color: {colors['hover']}; }}
+            QPushButton:pressed {{ background-color: {colors['card']}; }}
+            QPushButton#StartBtn {{ background-color: #169c8c; border: none; border-radius: 9px; color: white; font-weight: 700; font-size: 14px; padding: 12px; }}
+            QPushButton#StartBtn:hover {{ background-color: #128576; }}
+            QPushButton#StartBtn[running="true"] {{ background-color: #df4b55; }}
+            QTabWidget::pane {{ border: 1px solid {colors['border']}; border-radius: 9px; background: {colors['panel']}; top: -1px; }}
+            QTabBar::tab {{ background: transparent; color: {colors['muted']}; border: none; border-bottom: 2px solid transparent; padding: 8px 13px; }}
+            QTabBar::tab:hover {{ color: {colors['text']}; }}
+            QTabBar::tab:selected {{ color: #18a999; border-bottom: 2px solid #18a999; font-weight: 600; }}
+            QScrollArea, QScrollArea > QWidget > QWidget {{ background: {colors['panel']}; border: none; }}
+            QComboBox, QLineEdit {{ background-color: {colors['field']}; color: {colors['text']}; border: 1px solid {colors['border']}; border-radius: 7px; padding: 6px 8px; }}
+            QComboBox QAbstractItemView {{ background-color: {colors['panel']}; color: {colors['text']}; selection-background-color: #169c8c; }}
+            QSlider::groove:horizontal {{ border: none; height: 4px; background: {colors['card']}; border-radius: 2px; }}
+            QSlider::handle:horizontal {{ background: #169c8c; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
+            QSlider::sub-page:horizontal {{ background: #169c8c; border-radius: 2px; }}
+            QTextEdit#Log {{ background-color: {colors['field']}; color: {colors['text']}; border: 1px solid {colors['border']}; border-radius: 9px; padding: 6px; font-family: 'Consolas', monospace; font-size: 11px; }}
+            QCheckBox {{ spacing: 6px; }}
+            QToolTip {{ background-color: {colors['card']}; color: {colors['text']}; border: 1px solid {colors['border']}; padding: 4px; }}
+        """)
+        muted_style = f"color: {colors['muted']}; font-size: 11px;"
+        for label in (self.hud_lbl, self.bag_lbl, self.af_lbl, self.instruct_lbl):
+            label.setStyleSheet(muted_style)
+        preview_style = f"border: 1px solid {colors['border']}; background-color: {colors['card']};"
+        for label in (
+            self.lbl_crop, self.lbl_mask, self.lbl_gold_ore,
+            self.lbl_gold_text, self.lbl_diamond_slot,
+        ):
+            label.setStyleSheet(preview_style)
+
+    def on_dark_mode_toggled(self, checked):
+        self.dark_mode = bool(checked)
+        self.apply_theme()
+        self.save_config()
 
     def sync_worker_config(self):
         for k, v in self.thresholds.items(): self.worker.set_config(k, "threshold", v)
@@ -1655,10 +1774,13 @@ class MainWindow(QMainWindow):
                 self.monitor_cards[name]["conf"].setText(f"{confidence*100:.1f}%")
                 if matched:
                     self.monitor_cards[name]["led"].setStyleSheet("color: #0d9488; font-size: 18px;")
-                    self.monitor_cards[name]["frame"].setStyleSheet("border: 1px solid #0d9488; background-color: #f0fdf4;")
+                    matched_bg = "#153b36" if self.dark_mode else "#f0fdf4"
+                    self.monitor_cards[name]["frame"].setStyleSheet(f"border: 1px solid #0d9488; background-color: {matched_bg};")
                 else:
                     self.monitor_cards[name]["led"].setStyleSheet("color: #94a3b8; font-size: 16px;")
-                    self.monitor_cards[name]["frame"].setStyleSheet("border: 1px solid #cbd5e1; background-color: #f1f5f9;")
+                    border = "#334155" if self.dark_mode else "#cbd5e1"
+                    background = "#1e293b" if self.dark_mode else "#f1f5f9"
+                    self.monitor_cards[name]["frame"].setStyleSheet(f"border: 1px solid {border}; background-color: {background};")
 
     @Slot(np.ndarray, np.ndarray, int, int)
     def update_hud_preview(self, crop, mask, hunger_px, thirst_px):
@@ -1757,6 +1879,7 @@ class MainWindow(QMainWindow):
         self.confirm_trunk_search_region = None
         self.hunger_limit, self.thirst_limit = 20, 20
         self.auto_feed_enabled, self.auto_store_enabled = True, True
+        self.dark_mode = False
         self.diamond_mode = "car_timer"
         self.diamond_interval_minutes = 20
         self.discord_webhook_url = ""
@@ -1786,6 +1909,7 @@ class MainWindow(QMainWindow):
                     self.thirst_limit = data.get("thirst_limit", 20)
                     self.auto_feed_enabled = data.get("auto_feed_enabled", True)
                     self.auto_store_enabled = data.get("auto_store_enabled", True)
+                    self.dark_mode = bool(data.get("dark_mode", False))
                     self.diamond_mode = data.get("diamond_mode", "car_timer")
                     self.diamond_interval_minutes = int(data.get("diamond_interval_minutes", 20))
                     self.reference_resolution = data.get("reference_resolution", None)
@@ -1809,6 +1933,7 @@ class MainWindow(QMainWindow):
                 "confirm_trunk_search_region": self.confirm_trunk_search_region,
                 "hunger_limit": self.hunger_limit, "thirst_limit": self.thirst_limit,
                 "auto_feed_enabled": self.auto_feed_enabled, "auto_store_enabled": self.auto_store_enabled,
+                "dark_mode": self.dark_mode,
                 "diamond_mode": self.diamond_mode,
                 "diamond_interval_minutes": self.diamond_interval_minutes,
                 "reference_resolution": self.reference_resolution,
