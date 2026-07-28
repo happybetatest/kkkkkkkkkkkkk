@@ -824,6 +824,39 @@ class MacroWorker(QThread):
             self.log_signal.emit(f"[Auto-Feed Error] Focus game failed: {e}")
             return None
 
+    def measure_hud_levels(self, hud_crop):
+        """Return food/water pixels for the server's stacked red/blue HUD."""
+        hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
+        blue_mask = cv2.inRange(
+            hsv, np.array([90, 100, 60]), np.array([115, 255, 255])
+        )
+        red_low = cv2.inRange(
+            hsv, np.array([0, 90, 60]), np.array([12, 255, 255])
+        )
+        red_high = cv2.inRange(
+            hsv, np.array([170, 90, 60]), np.array([179, 255, 255])
+        )
+        red_mask = cv2.bitwise_or(red_low, red_high)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        hunger_px = int(np.count_nonzero(red_mask))
+        thirst_px = int(np.count_nonzero(blue_mask))
+        if hunger_px == 0 and thirst_px == 0:
+            pink_mask = cv2.inRange(
+                hsv, np.array([130, 45, 70]), np.array([170, 255, 255])
+            )
+            pink_mask = cv2.morphologyEx(
+                pink_mask, cv2.MORPH_OPEN, kernel
+            )
+            crop_w = pink_mask.shape[1]
+            hunger_px = int(np.count_nonzero(pink_mask[:, :crop_w // 2]))
+            thirst_px = int(np.count_nonzero(pink_mask[:, crop_w // 2:]))
+            preview_mask = pink_mask
+        else:
+            preview_mask = cv2.bitwise_or(red_mask, blue_mask)
+        return hunger_px, thirst_px, preview_mask
+
     def process_hud_preview(self, bg_img):
         try:
             h_img, w_img, _ = bg_img.shape
@@ -834,14 +867,7 @@ class MacroWorker(QThread):
             y_start, y_end = max(0, min(hy, h_img)), max(0, min(hy + hh, h_img))
             if (x_end - x_start) < 10 or (y_end - y_start) < 10: return
             hud_crop = bg_img[y_start:y_end, x_start:x_end]
-            hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
-            lower_pink, upper_pink = np.array([130, 45, 70]), np.array([170, 255, 255])
-            mask = cv2.inRange(hsv, lower_pink, upper_pink)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            crop_w = mask.shape[1]
-            hunger_px = int(np.sum(mask[:, :crop_w//2] > 0))
-            thirst_px = int(np.sum(mask[:, crop_w//2:] > 0))
+            hunger_px, thirst_px, mask = self.measure_hud_levels(hud_crop)
             color_mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
             color_mask[mask > 0] = [180, 50, 240]
             self.hud_preview_signal.emit(hud_crop, color_mask, hunger_px, thirst_px)
@@ -910,14 +936,7 @@ class MacroWorker(QThread):
         y_start, y_end = max(0, min(hy, h_img)), max(0, min(hy + hh, h_img))
         if x_end - x_start < 10 or y_end - y_start < 10: return
         hud_crop = bg_img[y_start:y_end, x_start:x_end]
-        hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
-        lower_pink, upper_pink = np.array([130, 45, 70]), np.array([170, 255, 255])
-        mask = cv2.inRange(hsv, lower_pink, upper_pink)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        crop_w = mask.shape[1]
-        hunger_px = np.sum(mask[:, :crop_w//2] > 0)
-        thirst_px = np.sum(mask[:, crop_w//2:] > 0)
+        hunger_px, thirst_px, _ = self.measure_hud_levels(hud_crop)
         need_food, need_water = hunger_px < self.hunger_limit, thirst_px < self.thirst_limit
         if need_food or need_water:
             now = time.time()
