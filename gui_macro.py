@@ -629,6 +629,67 @@ class MacroWorker(QThread):
             h_img, w_img = bg_img.shape[:2]
             ore_path = self.resolve_template_path("templates/gold_ore.png")
             sx, sy = self.get_template_scale(ore_path, w_img, h_img)
+
+            # Read the live leading digit instead of requiring the exact text
+            # "30". Counts 31-39 must also trigger disposal.
+            live_x0 = max(0, ore_x)
+            live_x1 = min(w_img, ore_x + max(24, int(round(45 * sx))))
+            live_y0 = max(0, ore_y - max(20, int(round(55 * sy))))
+            live_y1 = min(h_img, ore_y - max(5, int(round(15 * sy))))
+            live_strip = bg_img[live_y0:live_y1, live_x0:live_x1]
+            if live_strip.size:
+                live_gray = cv2.cvtColor(live_strip, cv2.COLOR_BGR2GRAY)
+                _, live_binary = cv2.threshold(
+                    live_gray, 120, 255, cv2.THRESH_BINARY
+                )
+                live_count, _, live_stats, _ = cv2.connectedComponentsWithStats(
+                    live_binary, 8
+                )
+                live_glyphs = []
+                min_h = max(3, int(round(4 * sy)))
+                max_h = max(min_h + 1, int(round(12 * sy)))
+                for index in range(1, live_count):
+                    gx, gy, gw, gh, area = map(int, live_stats[index])
+                    if area >= 5 and min_h <= gh <= max_h and gw >= 2:
+                        live_glyphs.append((gx, gy, gw, gh, area))
+                live_glyphs.sort(key=lambda item: item[0])
+                if len(live_glyphs) >= 4:
+                    first_live = live_glyphs[0]
+                    row_glyphs = [
+                        item for item in live_glyphs
+                        if abs(item[1] - first_live[1]) <= max(2, int(round(2 * sy)))
+                    ]
+                    if len(row_glyphs) >= 4:
+                        gx, gy, gw, gh, _ = first_live
+                        live_digit = live_gray[gy:gy + gh, gx:gx + gw]
+                        digit_scores = []
+                        for digit_template in (
+                            first_digit_template, fourth_digit_template
+                        ):
+                            scaled_digit = cv2.resize(
+                                digit_template, (gw, gh),
+                                interpolation=cv2.INTER_AREA
+                                if gw < digit_template.shape[1]
+                                or gh < digit_template.shape[0]
+                                else cv2.INTER_CUBIC
+                            )
+                            scaled_gray = cv2.cvtColor(
+                                scaled_digit, cv2.COLOR_BGR2GRAY
+                            )
+                            score_result = cv2.matchTemplate(
+                                live_digit, scaled_gray,
+                                cv2.TM_CCOEFF_NORMED
+                            )
+                            digit_scores.append(cv2.minMaxLoc(score_result)[1])
+                        leading_score = max(digit_scores)
+                        if leading_score >= 0.72:
+                            return (
+                                live_x0 + gx + gw // 2,
+                                live_y0 + gy + gh // 2,
+                                leading_score,
+                                live_strip
+                            )
+
             # Search only the count area of this inventory slot. The old wide
             # rectangle could accidentally use a "30" from a neighbouring item.
             x0 = max(0, ore_x - max(4, int(round(10 * sx))))
