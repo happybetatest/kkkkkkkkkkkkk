@@ -281,6 +281,8 @@ class MacroWorker(QThread):
         self.gold_count_candidate = None
         self.gold_count_candidate_streak = 0
         self.gold_count_committed = None
+        self.gold_disposal_stage = None
+        self.gold_disposal_started_at = 0.0
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -801,6 +803,8 @@ class MacroWorker(QThread):
         self.gold_count_candidate = None
         self.gold_count_candidate_streak = 0
         self.gold_count_committed = None
+        self.gold_disposal_stage = None
+        self.gold_disposal_started_at = 0.0
         self.log_signal.emit(
             f"[ระบบทอง] เป้าหมายทิ้งรอบใหม่: "
             f"{self.gold_discard_target}/40"
@@ -1430,36 +1434,55 @@ class MacroWorker(QThread):
                     continue
                 match_status = {}
                 h_img, w_img, _ = bg_img.shape
+
+                if (
+                    self.gold_disposal_stage
+                    and time.time() - self.gold_disposal_started_at > 20.0
+                ):
+                    self.log_signal.emit(
+                        "[ระบบทอง] ขั้นตอนทิ้งทองหมดเวลา ยกเลิกรอบนี้"
+                    )
+                    self.gold_disposal_stage = None
+
                 all_x, all_y = self.get_region_ranges(self.all_search_region, w_img, h_img, (0.35, 0.65), (0.35, 0.75))
-                all_result = self.find_image(bg_img, TEMPLATES["all"], self.thresholds["all"], x_range=all_x, y_range=all_y)
-                if all_result and all_result[0] is not None:
+                all_result = None
+                if self.gold_disposal_stage == "await_all":
+                    all_result = self.find_image(bg_img, TEMPLATES["all"], self.thresholds["all"], x_range=all_x, y_range=all_y)
+                if self.gold_disposal_stage == "await_all" and all_result and all_result[0] is not None:
                     x_all, y_all, val_all = all_result
                     match_status["all"] = (True, val_all)
                     self.match_signal.emit(match_status)
                     self.bg_click(self.hwnd, x_all, y_all)
+                    self.gold_disposal_stage = "await_confirm"
                     time.sleep(0.5)
-                    bg_img_after = self.capture_background(self.hwnd)
-                    if bg_img_after is not None:
-                        conf_x, conf_y = self.get_region_ranges(self.confirm_search_region, w_img, h_img, (0.35, 0.65), (0.35, 0.75))
-                        confirm_result = self.find_image(bg_img_after, TEMPLATES["confirm"], self.thresholds["confirm"], x_range=conf_x, y_range=conf_y)
-                        if confirm_result and confirm_result[0] is not None:
-                            x_conf, y_conf, val_conf = confirm_result
-                            match_status["confirm"] = (True, val_conf)
-                            self.match_signal.emit(match_status)
-                            self.bg_click(self.hwnd, x_conf, y_conf)
-                            time.sleep(self.delays["confirm"])
-                            self.choose_next_gold_target()
                     continue
                 else:
                     match_status["all"], match_status["confirm"] = (False, all_result[2] if all_result else 0.0), (False, 0.0)
+
+                if self.gold_disposal_stage == "await_confirm":
+                    conf_x, conf_y = self.get_region_ranges(self.confirm_search_region, w_img, h_img, (0.35, 0.65), (0.35, 0.75))
+                    confirm_result = self.find_image(bg_img, TEMPLATES["confirm"], self.thresholds["confirm"], x_range=conf_x, y_range=conf_y)
+                    if confirm_result and confirm_result[0] is not None:
+                        x_conf, y_conf, val_conf = confirm_result
+                        match_status["confirm"] = (True, val_conf)
+                        self.match_signal.emit(match_status)
+                        self.bg_click(self.hwnd, x_conf, y_conf)
+                        time.sleep(self.delays["confirm"])
+                        self.choose_next_gold_target()
+                    else:
+                        time.sleep(0.3)
+                    continue
                 
                 dest_x, dest_y = self.get_region_ranges(self.destroy_search_region, w_img, h_img, (0.25, 0.85), (0.15, 0.90))
-                destroy_result = self.find_image(bg_img, TEMPLATES["destroy"], self.thresholds["destroy"], x_range=dest_x, y_range=dest_y)
-                if destroy_result and destroy_result[0] is not None:
+                destroy_result = None
+                if self.gold_disposal_stage == "await_destroy":
+                    destroy_result = self.find_image(bg_img, TEMPLATES["destroy"], self.thresholds["destroy"], x_range=dest_x, y_range=dest_y)
+                if self.gold_disposal_stage == "await_destroy" and destroy_result and destroy_result[0] is not None:
                     x, y, val = destroy_result
                     match_status["destroy"] = (True, val)
                     self.match_signal.emit(match_status)
                     self.bg_click(self.hwnd, x, y)
+                    self.gold_disposal_stage = "await_all"
                     time.sleep(self.delays["destroy"])
                     continue
                 else:
@@ -1518,6 +1541,8 @@ class MacroWorker(QThread):
                         if is_matched:
                             self.match_signal.emit(match_status)
                             self.bg_right_click(self.hwnd, ore_x, ore_y)
+                            self.gold_disposal_stage = "await_destroy"
+                            self.gold_disposal_started_at = time.time()
                             time.sleep(self.delays["gold"])
                             self.gold_preview_signal.emit(preview_ore_img, preview_text_img, preview_ore_score, preview_text_score, preview_target_thresh)
                             continue
