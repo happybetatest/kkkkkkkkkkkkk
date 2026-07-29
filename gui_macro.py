@@ -1675,10 +1675,14 @@ class MacroWorker(QThread):
 # MAIN GUI WINDOW
 # ==========================================
 class MainWindow(QMainWindow):
+    hotkey_toggle_signal = Signal()
+    hotkey_close_signal = Signal()
+
     def __init__(self):
         super().__init__()
         self.config_path = get_writable_path("config.json")
         self.private_settings_path = get_writable_path("private-settings.json")
+        self.last_toggle_time = 0.0
         self.load_config()
         self.load_private_settings()
         self.setWindowTitle("ระบบมาโครทิ้งทองอัตโนมัติ (Background)")
@@ -2012,8 +2016,18 @@ class MainWindow(QMainWindow):
         self.worker.running_state_signal.connect(self.on_worker_running_state)
         self.worker.start()
 
-        keyboard.add_hotkey("F9", self.toggle_macro)
-        keyboard.add_hotkey("F10", self.close)
+        self.hotkey_toggle_signal.connect(self.toggle_macro)
+        self.hotkey_close_signal.connect(self.close)
+        keyboard.add_hotkey(
+            "F9",
+            self.hotkey_toggle_signal.emit,
+            trigger_on_release=True
+        )
+        keyboard.add_hotkey(
+            "F10",
+            self.hotkey_close_signal.emit,
+            trigger_on_release=True
+        )
         self.write_log("ยินดีต้อนรับสู่แผงควบคุมระบบฟาร์มทิ้งทองอัตโนมัติ (Background)")
 
     def sync_worker_config(self):
@@ -2099,6 +2113,10 @@ class MainWindow(QMainWindow):
         except Exception: pass
 
     def toggle_macro(self):
+        now = time.monotonic()
+        if now - self.last_toggle_time < 0.8:
+            return
+        self.last_toggle_time = now
         self.worker.is_running = not self.worker.is_running
         if self.worker.is_running:
             self.worker.reset_diamond_cycle()
