@@ -994,11 +994,39 @@ class MacroWorker(QThread):
         )
         pink_mask = cv2.morphologyEx(pink_mask, cv2.MORPH_OPEN, kernel)
         crop_w = pink_mask.shape[1]
-        pink_food = int(np.count_nonzero(pink_mask[:, :crop_w // 2]))
-        pink_water = int(np.count_nonzero(pink_mask[:, crop_w // 2:]))
-        if pink_food >= 5 and pink_water >= 5:
-            hunger_px = pink_food
-            thirst_px = pink_water
+        pink_left = int(np.count_nonzero(pink_mask[:, :crop_w // 2]))
+        pink_right = int(np.count_nonzero(pink_mask[:, crop_w // 2:]))
+
+        def circular_number_is_low(circle_hsv):
+            ch, cw = circle_hsv.shape[:2]
+            number_zone = circle_hsv[
+                int(ch * 0.25):int(ch * 0.75),
+                int(cw * 0.18):int(cw * 0.82)
+            ]
+            if number_zone.size == 0:
+                return False
+            white = cv2.inRange(
+                number_zone,
+                np.array([0, 0, 150]), np.array([179, 100, 255])
+            )
+            count, _, stats, _ = cv2.connectedComponentsWithStats(white, 8)
+            glyphs = []
+            for index in range(1, count):
+                gx, gy, gw, gh, area = map(int, stats[index])
+                if area >= 3 and gh >= max(3, int(ch * 0.10)):
+                    glyphs.append((gx, gy, gw, gh))
+            if not glyphs:
+                return False
+            text_x0 = min(item[0] for item in glyphs)
+            text_x1 = max(item[0] + item[2] for item in glyphs)
+            return (text_x1 - text_x0) <= max(5, int(round(cw * 0.21)))
+
+        if pink_left >= 5 and pink_right >= 5:
+            middle = crop_w // 2
+            water_low = circular_number_is_low(hsv[:, :middle])
+            food_low = circular_number_is_low(hsv[:, middle:])
+            hunger_px = 0 if food_low else pink_right
+            thirst_px = 0 if water_low else pink_left
             preview_mask = pink_mask
         else:
             hunger_px = int(np.count_nonzero(red_mask))
