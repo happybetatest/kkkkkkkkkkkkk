@@ -170,48 +170,6 @@ class RegionSelector(QWidget):
             self.close_callback()
         event.accept()
 
-
-class ToggleSwitch(QCheckBox):
-    """Compact ON/OFF switch that keeps the familiar checkbox behavior."""
-
-    def __init__(self, text="", parent=None):
-        super().__init__(text, parent)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(32)
-
-    def hitButton(self, position):
-        # The native QCheckBox hit area still points at its hidden indicator.
-        # Treat the complete custom row, including the pill on the right, as
-        # clickable.
-        return self.isEnabled() and self.rect().contains(position)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        text_color = self.palette().color(self.foregroundRole())
-        painter.setPen(text_color)
-        text_rect = self.rect().adjusted(0, 0, -64, 0)
-        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
-
-        track = QRect(self.width() - 56, 4, 52, 26)
-        track_color = QColor("#18c37e" if self.isChecked() else "#4b505a")
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(track_color)
-        painter.drawRoundedRect(track, 13, 13)
-
-        knob_x = track.right() - 23 if self.isChecked() else track.left() + 3
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawEllipse(knob_x, track.top() + 3, 20, 20)
-
-        painter.setPen(QColor("#ffffff" if self.isChecked() else "#d2d5da"))
-        label = "ON" if self.isChecked() else "OFF"
-        label_rect = QRect(
-            track.left() + (5 if self.isChecked() else 25),
-            track.top(), 24, track.height()
-        )
-        painter.drawText(label_rect, Qt.AlignCenter, label)
-
-
 WINDOW_NAME = "FiveM"
 TEMPLATES = {
     "gold": "templates/gold.png",
@@ -256,8 +214,6 @@ class MacroWorker(QThread):
         self.force_feed_test = False
         self.force_store_test = False
         self.last_hud_check_time = 0.0
-        self.last_feeding_attempt_time = 0.0
-        self.feeding_cooldown_until = 0.0
         self.last_diamond_check_time = 0.0
         self.last_diamond_storage_time = 0.0
         self.diamond_pass_streak = 0
@@ -585,7 +541,7 @@ class MacroWorker(QThread):
             return None
 
     def find_gold_count(self, bg_img, ore_x, ore_y, threshold):
-        """Require a numerator of 30 or 40 directly above the detected gold ore."""
+        """Require a numerator of 30 or 40 directly above the detected gold."""
         try:
             template_path = self.resolve_template_path("templates/gold_text.png")
             template = cv2.imread(template_path)
@@ -618,7 +574,9 @@ class MacroWorker(QThread):
                 first_digit_x:first_digit_x + first_digit_w
             ]
             last_x, last_y, last_w, last_h, _ = components[-1]
-            four_w = min(last_w, max(first_digit_w + 1, last_w // 2))
+            four_w = min(
+                last_w, max(first_digit_w + 1, last_w // 2)
+            )
             fourth_digit_template = upper[
                 last_y:last_y + last_h,
                 last_x:last_x + four_w
@@ -634,65 +592,85 @@ class MacroWorker(QThread):
             numerator_template = upper[ty0:ty1, tx0:tx1]
             if numerator_template.size == 0:
                 return None
-            full_x0 = max(0, last_x - pad)
-            full_x1 = min(upper.shape[1], last_x + last_w + pad)
-            full_numerator_template = upper[ty0:ty1, full_x0:full_x1]
 
             h_img, w_img = bg_img.shape[:2]
             ore_path = self.resolve_template_path("templates/gold_ore.png")
             sx, sy = self.get_template_scale(ore_path, w_img, h_img)
 
-            # Read the live leading digit instead of requiring the exact text
-            # "30". Counts 31-39 must also trigger disposal.
+            # อ่านเลขหลักแรกจากภาพจริง เพื่อให้ 30-40 ผ่านได้ทั้งหมด
             live_x0 = max(0, ore_x)
-            live_x1 = min(w_img, ore_x + max(24, int(round(45 * sx))))
-            live_y0 = max(0, ore_y - max(20, int(round(55 * sy))))
-            live_y1 = min(h_img, ore_y - max(5, int(round(15 * sy))))
+            live_x1 = min(
+                w_img, ore_x + max(24, int(round(45 * sx)))
+            )
+            live_y0 = max(
+                0, ore_y - max(20, int(round(55 * sy)))
+            )
+            live_y1 = min(
+                h_img, ore_y - max(5, int(round(15 * sy)))
+            )
             live_strip = bg_img[live_y0:live_y1, live_x0:live_x1]
             if live_strip.size:
                 live_gray = cv2.cvtColor(live_strip, cv2.COLOR_BGR2GRAY)
                 _, live_binary = cv2.threshold(
                     live_gray, 120, 255, cv2.THRESH_BINARY
                 )
-                live_count, _, live_stats, _ = cv2.connectedComponentsWithStats(
-                    live_binary, 8
+                live_count, _, live_stats, _ = (
+                    cv2.connectedComponentsWithStats(live_binary, 8)
                 )
                 live_glyphs = []
                 min_h = max(3, int(round(4 * sy)))
                 max_h = max(min_h + 1, int(round(12 * sy)))
                 for index in range(1, live_count):
-                    gx, gy, gw, gh, area = map(int, live_stats[index])
-                    if area >= 5 and min_h <= gh <= max_h and gw >= 2:
+                    gx, gy, gw, gh, area = map(
+                        int, live_stats[index]
+                    )
+                    if (
+                        area >= 5
+                        and min_h <= gh <= max_h
+                        and gw >= 2
+                    ):
                         live_glyphs.append((gx, gy, gw, gh, area))
                 live_glyphs.sort(key=lambda item: item[0])
                 if len(live_glyphs) >= 5:
                     first_live = live_glyphs[0]
                     row_glyphs = [
                         item for item in live_glyphs
-                        if abs(item[1] - first_live[1]) <= max(2, int(round(2 * sy)))
+                        if abs(item[1] - first_live[1])
+                        <= max(2, int(round(2 * sy)))
                     ]
                     if len(row_glyphs) >= 5:
                         gx, gy, gw, gh, _ = first_live
-                        live_digit = live_gray[gy:gy + gh, gx:gx + gw]
+                        live_digit = live_gray[
+                            gy:gy + gh, gx:gx + gw
+                        ]
                         digit_scores = []
                         for digit_template in (
-                            first_digit_template, fourth_digit_template
+                            first_digit_template,
+                            fourth_digit_template
                         ):
                             scaled_digit = cv2.resize(
-                                digit_template, (gw, gh),
-                                interpolation=cv2.INTER_AREA
-                                if gw < digit_template.shape[1]
-                                or gh < digit_template.shape[0]
-                                else cv2.INTER_CUBIC
+                                digit_template,
+                                (gw, gh),
+                                interpolation=(
+                                    cv2.INTER_AREA
+                                    if (
+                                        gw < digit_template.shape[1]
+                                        or gh < digit_template.shape[0]
+                                    )
+                                    else cv2.INTER_CUBIC
+                                )
                             )
                             scaled_gray = cv2.cvtColor(
                                 scaled_digit, cv2.COLOR_BGR2GRAY
                             )
                             score_result = cv2.matchTemplate(
-                                live_digit, scaled_gray,
+                                live_digit,
+                                scaled_gray,
                                 cv2.TM_CCOEFF_NORMED
                             )
-                            digit_scores.append(cv2.minMaxLoc(score_result)[1])
+                            digit_scores.append(
+                                cv2.minMaxLoc(score_result)[1]
+                            )
                         leading_score = max(digit_scores)
                         if leading_score >= 0.72:
                             return (
@@ -705,8 +683,7 @@ class MacroWorker(QThread):
             # Search only the count area of this inventory slot. The old wide
             # rectangle could accidentally use a "30" from a neighbouring item.
             x0 = max(0, ore_x - max(4, int(round(10 * sx))))
-            # Keep the constant denominator "/40" outside the search area.
-            x1 = min(w_img, ore_x + max(8, int(round(14 * sx))))
+            x1 = min(w_img, ore_x + max(12, int(round(50 * sx))))
             y0 = max(0, ore_y - max(12, int(round(55 * sy))))
             y1 = min(h_img, ore_y + max(3, int(round(8 * sy))))
             search_img = bg_img[y0:y1, x0:x1]
@@ -719,26 +696,22 @@ class MacroWorker(QThread):
             scale_offsets = (1.0, 0.90, 1.10, 0.82, 1.18, 0.76, 1.24)
             search_gray = cv2.cvtColor(search_img, cv2.COLOR_BGR2GRAY)
             best_val, best_loc, best_size = -1.0, None, None
-            best_template = numerator_template
             seen_sizes = set()
-            for count_template in (numerator_template, full_numerator_template):
-                for nearby in scale_offsets:
-                    new_w = max(4, int(round(count_template.shape[1] * scale_x * nearby)))
-                    new_h = max(3, int(round(count_template.shape[0] * scale_y * nearby)))
-                    size_key = (id(count_template), new_w, new_h)
-                    if size_key in seen_sizes:
-                        continue
-                    seen_sizes.add(size_key)
-                    if search_gray.shape[0] < new_h or search_gray.shape[1] < new_w:
-                        continue
-                    interpolation = cv2.INTER_AREA if new_w < count_template.shape[1] or new_h < count_template.shape[0] else cv2.INTER_CUBIC
-                    scaled = cv2.resize(count_template, (new_w, new_h), interpolation=interpolation)
-                    scaled_gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
-                    result = cv2.matchTemplate(search_gray, scaled_gray, cv2.TM_CCOEFF_NORMED)
-                    _, score, _, location = cv2.minMaxLoc(result)
-                    if score > best_val:
-                        best_val, best_loc, best_size = score, location, (new_w, new_h)
-                        best_template = count_template
+            for nearby in scale_offsets:
+                new_w = max(4, int(round(numerator_template.shape[1] * scale_x * nearby)))
+                new_h = max(3, int(round(numerator_template.shape[0] * scale_y * nearby)))
+                if (new_w, new_h) in seen_sizes:
+                    continue
+                seen_sizes.add((new_w, new_h))
+                if search_gray.shape[0] < new_h or search_gray.shape[1] < new_w:
+                    continue
+                interpolation = cv2.INTER_AREA if new_w < numerator_template.shape[1] or new_h < numerator_template.shape[0] else cv2.INTER_CUBIC
+                scaled = cv2.resize(numerator_template, (new_w, new_h), interpolation=interpolation)
+                scaled_gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+                result = cv2.matchTemplate(search_gray, scaled_gray, cv2.TM_CCOEFF_NORMED)
+                _, score, _, location = cv2.minMaxLoc(result)
+                if score > best_val:
+                    best_val, best_loc, best_size = score, location, (new_w, new_h)
 
             if best_loc is None:
                 return (None, None, 0.0, search_img)
@@ -746,8 +719,8 @@ class MacroWorker(QThread):
             # "20" can still resemble "30" when both tiny digits are matched
             # together because the trailing zero is identical. Verify the first
             # glyph independently: a 3 must match the saved 3 shape, not a 2.
-            matched_scale_x = best_size[0] / float(best_template.shape[1])
-            matched_scale_y = best_size[1] / float(best_template.shape[0])
+            matched_scale_x = best_size[0] / float(numerator_template.shape[1])
+            matched_scale_y = best_size[1] / float(numerator_template.shape[0])
             digit_w = max(2, int(round(first_digit_template.shape[1] * matched_scale_x)))
             digit_h = max(3, int(round(first_digit_template.shape[0] * matched_scale_y)))
             digit_offset_x = int(round((first_digit_x - tx0) * matched_scale_x))
@@ -756,7 +729,6 @@ class MacroWorker(QThread):
             digit_y0 = best_loc[1] + digit_offset_y
             digit_crop = search_gray[digit_y0:digit_y0 + digit_h, digit_x0:digit_x0 + digit_w]
             first_digit_score = -1.0
-            fourth_digit_score = -1.0
             if digit_crop.shape == (digit_h, digit_w):
                 digit_interpolation = cv2.INTER_AREA if digit_w < first_digit_template.shape[1] or digit_h < first_digit_template.shape[0] else cv2.INTER_CUBIC
                 scaled_digit = cv2.resize(first_digit_template, (digit_w, digit_h), interpolation=digit_interpolation)
@@ -764,28 +736,11 @@ class MacroWorker(QThread):
                 if float(np.std(scaled_digit_gray)) > 0.5:
                     digit_result = cv2.matchTemplate(digit_crop, scaled_digit_gray, cv2.TM_CCOEFF_NORMED)
                     _, first_digit_score, _, _ = cv2.minMaxLoc(digit_result)
-                scaled_four = cv2.resize(
-                    fourth_digit_template, (digit_w, digit_h),
-                    interpolation=cv2.INTER_AREA
-                    if digit_w < fourth_digit_template.shape[1]
-                    or digit_h < fourth_digit_template.shape[0]
-                    else cv2.INTER_CUBIC
-                )
-                scaled_four_gray = cv2.cvtColor(scaled_four, cv2.COLOR_BGR2GRAY)
-                if float(np.std(scaled_four_gray)) > 0.5:
-                    four_result = cv2.matchTemplate(
-                        digit_crop, scaled_four_gray, cv2.TM_CCOEFF_NORMED
-                    )
-                    _, fourth_digit_score, _, _ = cv2.minMaxLoc(four_result)
 
             tw, th = best_size
             center_x = x0 + best_loc[0] + tw // 2
             center_y = y0 + best_loc[1] + th // 2
-            first_is_full = (
-                best_template is full_numerator_template
-                or max(first_digit_score, fourth_digit_score) >= 0.72
-            )
-            if best_val >= threshold and first_is_full:
+            if best_val >= threshold and first_digit_score >= 0.72:
                 return (center_x, center_y, best_val, search_img)
             return (None, None, max(0.0, best_val), search_img)
         except Exception:
@@ -813,29 +768,45 @@ class MacroWorker(QThread):
         )
 
     def observe_gold_count_change(self, bg_img, ore_x, ore_y):
-        """Count stable numerator changes after a confirmed all-item disposal."""
+        """Count stable numerator changes after the first confirmed disposal."""
         if not self.gold_count_synced:
             return None
         try:
             h_img, w_img = bg_img.shape[:2]
-            ore_path = self.resolve_template_path("templates/gold_ore.png")
+            ore_path = self.resolve_template_path(
+                "templates/gold_ore.png"
+            )
             sx, sy = self.get_template_scale(ore_path, w_img, h_img)
             x0 = max(0, ore_x)
-            x1 = min(w_img, ore_x + max(24, int(round(45 * sx))))
-            y0 = max(0, ore_y - max(20, int(round(55 * sy))))
-            y1 = min(h_img, ore_y - max(5, int(round(15 * sy))))
+            x1 = min(
+                w_img, ore_x + max(24, int(round(45 * sx)))
+            )
+            y0 = max(
+                0, ore_y - max(20, int(round(55 * sy)))
+            )
+            y1 = min(
+                h_img, ore_y - max(5, int(round(15 * sy)))
+            )
             strip = bg_img[y0:y1, x0:x1]
             if strip.size == 0:
                 return self.gold_estimated_count
             gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
-            _, binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
-            count, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+            _, binary = cv2.threshold(
+                gray, 120, 255, cv2.THRESH_BINARY
+            )
+            count, _, stats, _ = cv2.connectedComponentsWithStats(
+                binary, 8
+            )
             glyphs = []
             min_h = max(3, int(round(4 * sy)))
             max_h = max(min_h + 1, int(round(12 * sy)))
             for index in range(1, count):
                 gx, gy, gw, gh, area = map(int, stats[index])
-                if area >= 5 and min_h <= gh <= max_h and gw >= 2:
+                if (
+                    area >= 5
+                    and min_h <= gh <= max_h
+                    and gw >= 2
+                ):
                     glyphs.append((gx, gy, gw, gh))
             glyphs.sort(key=lambda item: item[0])
             if len(glyphs) < 4:
@@ -843,17 +814,26 @@ class MacroWorker(QThread):
             first_y = glyphs[0][1]
             row = [
                 item for item in glyphs
-                if abs(item[1] - first_y) <= max(2, int(round(2 * sy)))
+                if abs(item[1] - first_y)
+                <= max(2, int(round(2 * sy)))
             ]
             if len(row) < 4:
                 return self.gold_estimated_count
             rx0 = max(0, min(item[0] for item in row) - 1)
             ry0 = max(0, min(item[1] for item in row) - 1)
-            rx1 = min(binary.shape[1], max(item[0] + item[2] for item in row) + 1)
-            ry1 = min(binary.shape[0], max(item[1] + item[3] for item in row) + 1)
+            rx1 = min(
+                binary.shape[1],
+                max(item[0] + item[2] for item in row) + 1
+            )
+            ry1 = min(
+                binary.shape[0],
+                max(item[1] + item[3] for item in row) + 1
+            )
             signature_crop = binary[ry0:ry1, rx0:rx1]
             signature = cv2.resize(
-                signature_crop, (48, 14), interpolation=cv2.INTER_NEAREST
+                signature_crop,
+                (48, 14),
+                interpolation=cv2.INTER_NEAREST
             ).tobytes()
             if signature != self.gold_count_candidate:
                 self.gold_count_candidate = signature
@@ -872,32 +852,15 @@ class MacroWorker(QThread):
 
     def activate_game_window(self):
         try:
-            if not self.hwnd or not win32gui.IsWindow(self.hwnd):
-                return None
             if win32gui.IsIconic(self.hwnd):
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
                 time.sleep(0.3)
-            try:
-                win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
-                win32gui.BringWindowToTop(self.hwnd)
-                win32gui.SetForegroundWindow(self.hwnd)
+            try: win32gui.SetForegroundWindow(self.hwnd)
             except Exception:
-                # Windows can reject SetForegroundWindow when another process
-                # owns the input queue.  A harmless Alt press grants the
-                # current process one more foreground attempt.
                 keyboard.send("alt")
                 time.sleep(0.1)
-                try:
-                    win32gui.BringWindowToTop(self.hwnd)
-                    win32gui.SetForegroundWindow(self.hwnd)
-                except Exception:
-                    pass
+                win32gui.SetForegroundWindow(self.hwnd)
             time.sleep(0.3)
-            if win32gui.GetForegroundWindow() != self.hwnd:
-                self.log_signal.emit(
-                    "[ระบบ] ไม่สามารถโฟกัส FiveM ได้ ยกเลิกรอบนี้เพื่อไม่ให้ส่งปุ่มผิดหน้าต่าง"
-                )
-                return None
             geometry = self.get_client_geometry()
             if not geometry:
                 return None
@@ -915,7 +878,7 @@ class MacroWorker(QThread):
             return None
 
     def is_inventory_open(self, bg_img=None):
-        """Detect an open inventory from known item artwork inside its region."""
+        """Detect an open inventory from known item artwork in its region."""
         if bg_img is None:
             bg_img = self.capture_background(self.hwnd)
         if bg_img is None:
@@ -936,8 +899,11 @@ class MacroWorker(QThread):
             ("templates/gold.png", 0.65),
         ):
             result = self.find_image(
-                bg_img, template_path, threshold,
-                x_range=x_range, y_range=y_range
+                bg_img,
+                template_path,
+                threshold,
+                x_range=x_range,
+                y_range=y_range
             )
             if result and result[0] is not None:
                 return True
@@ -945,14 +911,20 @@ class MacroWorker(QThread):
 
     def ensure_inventory_open(self, log_prefix="[ระบบ]"):
         if self.is_inventory_open():
-            self.log_signal.emit(f"{log_prefix} กระเป๋าเปิดอยู่แล้ว ไม่กด T ซ้ำ")
+            self.log_signal.emit(
+                f"{log_prefix} กระเป๋าเปิดอยู่แล้ว ไม่กด T ซ้ำ"
+            )
             return True
-        self.log_signal.emit(f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังกด T...")
+        self.log_signal.emit(
+            f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังกด T..."
+        )
         send_key_direct("t")
         time.sleep(1.2)
         opened = self.is_inventory_open()
         if opened:
-            self.log_signal.emit(f"{log_prefix} ตรวจสอบแล้ว: เปิดกระเป๋าสำเร็จ")
+            self.log_signal.emit(
+                f"{log_prefix} ตรวจสอบแล้ว: เปิดกระเป๋าสำเร็จ"
+            )
         else:
             self.log_signal.emit(
                 f"{log_prefix} ส่งปุ่ม T แล้ว แต่ยังตรวจไม่พบหน้ากระเป๋า"
@@ -963,76 +935,32 @@ class MacroWorker(QThread):
         if not self.is_inventory_open():
             self.log_signal.emit(f"{log_prefix} กระเป๋าปิดอยู่แล้ว")
             return True
-        self.log_signal.emit(f"{log_prefix} พบว่ากระเป๋าเปิดอยู่ กำลังกด T เพื่อปิด...")
-        send_key_direct("t")
-        time.sleep(1.0)
-        closed = not self.is_inventory_open()
-        if closed:
-            self.log_signal.emit(f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ")
-        else:
-            self.log_signal.emit(f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จ")
-        return closed
-
-    def measure_hud_levels(self, hud_crop):
-        """Return food/water pixels for the server's stacked red/blue HUD."""
-        hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
-        blue_mask = cv2.inRange(
-            hsv, np.array([90, 100, 60]), np.array([115, 255, 255])
+        for attempt in range(1, 3):
+            if attempt == 1:
+                self.log_signal.emit(
+                    f"{log_prefix} พบว่ากระเป๋าเปิดอยู่ "
+                    "กำลังกด T เพื่อปิด..."
+                )
+            else:
+                self.log_signal.emit(
+                    f"{log_prefix} กระเป๋ายังเปิดอยู่ "
+                    "กำลังลองกด T ซ้ำครั้งสุดท้าย..."
+                )
+            send_key_direct("t")
+            time.sleep(2.0)
+            if not self.is_inventory_open():
+                time.sleep(0.35)
+                if not self.is_inventory_open():
+                    self.log_signal.emit(
+                        f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ"
+                    )
+                    return True
+            if attempt < 2:
+                time.sleep(0.5)
+        self.log_signal.emit(
+            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 2 ครั้ง"
         )
-        red_low = cv2.inRange(
-            hsv, np.array([0, 90, 60]), np.array([12, 255, 255])
-        )
-        red_high = cv2.inRange(
-            hsv, np.array([170, 90, 60]), np.array([179, 255, 255])
-        )
-        red_mask = cv2.bitwise_or(red_low, red_high)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
-        pink_mask = cv2.inRange(
-            hsv, np.array([130, 45, 70]), np.array([169, 255, 255])
-        )
-        pink_mask = cv2.morphologyEx(pink_mask, cv2.MORPH_OPEN, kernel)
-        crop_w = pink_mask.shape[1]
-        pink_left = int(np.count_nonzero(pink_mask[:, :crop_w // 2]))
-        pink_right = int(np.count_nonzero(pink_mask[:, crop_w // 2:]))
-
-        def circular_number_is_low(circle_hsv):
-            ch, cw = circle_hsv.shape[:2]
-            number_zone = circle_hsv[
-                int(ch * 0.25):int(ch * 0.75),
-                int(cw * 0.18):int(cw * 0.82)
-            ]
-            if number_zone.size == 0:
-                return False
-            white = cv2.inRange(
-                number_zone,
-                np.array([0, 0, 150]), np.array([179, 100, 255])
-            )
-            count, _, stats, _ = cv2.connectedComponentsWithStats(white, 8)
-            glyphs = []
-            for index in range(1, count):
-                gx, gy, gw, gh, area = map(int, stats[index])
-                if area >= 3 and gh >= max(3, int(ch * 0.10)):
-                    glyphs.append((gx, gy, gw, gh))
-            if not glyphs:
-                return False
-            text_x0 = min(item[0] for item in glyphs)
-            text_x1 = max(item[0] + item[2] for item in glyphs)
-            return (text_x1 - text_x0) <= max(5, int(round(cw * 0.21)))
-
-        if pink_left >= 5 and pink_right >= 5:
-            middle = crop_w // 2
-            water_low = circular_number_is_low(hsv[:, :middle])
-            food_low = circular_number_is_low(hsv[:, middle:])
-            hunger_px = 0 if food_low else pink_right
-            thirst_px = 0 if water_low else pink_left
-            preview_mask = pink_mask
-        else:
-            hunger_px = int(np.count_nonzero(red_mask))
-            thirst_px = int(np.count_nonzero(blue_mask))
-            preview_mask = cv2.bitwise_or(red_mask, blue_mask)
-        return hunger_px, thirst_px, preview_mask
+        return False
 
     def process_hud_preview(self, bg_img):
         try:
@@ -1044,7 +972,14 @@ class MacroWorker(QThread):
             y_start, y_end = max(0, min(hy, h_img)), max(0, min(hy + hh, h_img))
             if (x_end - x_start) < 10 or (y_end - y_start) < 10: return
             hud_crop = bg_img[y_start:y_end, x_start:x_end]
-            hunger_px, thirst_px, mask = self.measure_hud_levels(hud_crop)
+            hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
+            lower_pink, upper_pink = np.array([130, 45, 70]), np.array([170, 255, 255])
+            mask = cv2.inRange(hsv, lower_pink, upper_pink)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            crop_w = mask.shape[1]
+            hunger_px = int(np.sum(mask[:, :crop_w//2] > 0))
+            thirst_px = int(np.sum(mask[:, crop_w//2:] > 0))
             color_mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
             color_mask[mask > 0] = [180, 50, 240]
             self.hud_preview_signal.emit(hud_crop, color_mask, hunger_px, thirst_px)
@@ -1053,11 +988,8 @@ class MacroWorker(QThread):
     def execute_feeding_sequence(self, need_food, need_water):
         self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
         orig_pos = self.activate_game_window()
-        if orig_pos is None:
-            self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
-            return False
-        # Do not press Esc blindly here. When no inventory/menu is open, Esc
-        # opens GTA's pause menu and later macro keys can enter Rockstar Editor.
+        send_key_direct("esc")
+        time.sleep(1.0)
         send_key_direct("x")
         time.sleep(1.0)
         if need_water:
@@ -1093,12 +1025,13 @@ class MacroWorker(QThread):
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 time.sleep(2.0)
-        self.ensure_inventory_open("[ระบบป้อนอาหาร]")
+        self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
+        send_key_direct("t")
+        time.sleep(1.0)
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
             except: pass
         self.log_signal.emit("[ระบบป้อนอาหาร] กินเสร็จเรียบร้อย!")
-        return True
 
     def check_and_run_auto_feed(self):
         bg_img = self.capture_background(self.hwnd)
@@ -1111,27 +1044,16 @@ class MacroWorker(QThread):
         y_start, y_end = max(0, min(hy, h_img)), max(0, min(hy + hh, h_img))
         if x_end - x_start < 10 or y_end - y_start < 10: return
         hud_crop = bg_img[y_start:y_end, x_start:x_end]
-        hunger_px, thirst_px, _ = self.measure_hud_levels(hud_crop)
+        hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
+        lower_pink, upper_pink = np.array([130, 45, 70]), np.array([170, 255, 255])
+        mask = cv2.inRange(hsv, lower_pink, upper_pink)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        crop_w = mask.shape[1]
+        hunger_px = np.sum(mask[:, :crop_w//2] > 0)
+        thirst_px = np.sum(mask[:, crop_w//2:] > 0)
         need_food, need_water = hunger_px < self.hunger_limit, thirst_px < self.thirst_limit
-        if need_food or need_water:
-            now = time.time()
-            # A successful feeding needs a long grace period. Some servers
-            # update the HUD slowly, and an obscured/mis-cropped HUD can remain
-            # at zero; retrying every minute repeatedly consumes slots 6/7.
-            if now < self.feeding_cooldown_until:
-                return
-            # Failed focus attempts may retry sooner, but still never every
-            # worker loop.
-            if now - self.last_feeding_attempt_time < 60.0:
-                return
-            self.last_feeding_attempt_time = now
-            fed_successfully = self.execute_feeding_sequence(
-                need_food, need_water
-            )
-            self.feeding_cooldown_until = time.time() + (
-                600.0 if fed_successfully else 60.0
-            )
-            self.last_hud_check_time = time.time()
+        if need_food or need_water: self.execute_feeding_sequence(need_food, need_water)
 
     def double_click_at(self, abs_x, abs_y):
         try:
@@ -1229,13 +1151,15 @@ class MacroWorker(QThread):
         self.log_signal.emit("[ระบบเก็บเพชร] เริ่มกระบวนการเก็บเพชรลงรถ...")
         orig_pos = self.activate_game_window()
         if orig_pos is None:
-            self.log_signal.emit("[ระบบเก็บเพชร] ยกเลิกรอบเก็บ เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ยกเลิกรอบเก็บ "
+                "เพราะ FiveM ไม่ได้อยู่ด้านหน้า"
+            )
             return False
-        # X safely cancels the current farming animation. A blind Esc can open
-        # GTA's pause menu and eventually navigate into Rockstar Editor.
         if not self.ensure_inventory_closed("[ระบบเก็บเพชร]"):
             self.log_signal.emit(
-                "[ระบบเก็บเพชร] ยกเลิกรอบ เพราะตรวจว่ายังปิดกระเป๋าไม่ได้"
+                "[ระบบเก็บเพชร] ยกเลิกรอบ "
+                "เพราะตรวจว่ายังปิดกระเป๋าไม่ได้"
             )
             return False
         send_key_direct("x")
@@ -1256,11 +1180,15 @@ class MacroWorker(QThread):
                 trunk_opened = True
                 time.sleep(4.0)
         if not trunk_opened:
-            self.log_signal.emit("[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ ยกเลิกรอบนี้")
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ ยกเลิกรอบนี้"
+            )
             self.ensure_inventory_open("[ระบบเก็บเพชร]")
             if orig_pos:
-                try: win32api.SetCursorPos(orig_pos)
-                except Exception: pass
+                try:
+                    win32api.SetCursorPos(orig_pos)
+                except Exception:
+                    pass
             return False
         bg_trunk = self.capture_background(self.hwnd)
         if bg_trunk is not None:
@@ -1303,7 +1231,10 @@ class MacroWorker(QThread):
                                 time.sleep(1.5)
                                 stored_successfully = True
         if not stored_successfully:
-            self.log_signal.emit("[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ")
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน "
+                "จึงยังไม่ได้เก็บเข้ารถ"
+            )
         if trunk_opened:
             send_key_direct("esc")
             time.sleep(1.0)
@@ -1328,7 +1259,9 @@ class MacroWorker(QThread):
             try: win32api.SetCursorPos(orig_pos)
             except: pass
         if stored_successfully:
-            self.log_signal.emit("[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!")
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!"
+            )
         return stored_successfully
 
     def check_and_run_store_diamonds(self, trigger_storage=False):
@@ -1419,10 +1352,15 @@ class MacroWorker(QThread):
             if elapsed >= interval_seconds:
                 now = time.time()
                 if now - self.last_diamond_storage_time < 120.0:
-                    retry_in = int(120.0 - (now - self.last_diamond_storage_time))
+                    retry_in = int(
+                        120.0 - (now - self.last_diamond_storage_time)
+                    )
                     self.diamond_preview_signal.emit(
-                        slot_img, val, False,
-                        f"เก็บไม่สำเร็จ รอลองใหม่อีก {retry_in} วินาที"
+                        slot_img,
+                        val,
+                        False,
+                        f"เก็บไม่สำเร็จ รอลองใหม่อีก "
+                        f"{retry_in} วินาที"
                     )
                     return
                 self.last_diamond_storage_time = now
@@ -1432,6 +1370,11 @@ class MacroWorker(QThread):
                 )
                 if self.execute_store_diamonds_sequence():
                     self.diamond_cycle_started_at = time.time()
+                    self.log_signal.emit(
+                        f"[ระบบเก็บเพชร] ขั้นต่อไป: "
+                        f"เก็บเข้ารถรอบใหม่ในอีก "
+                        f"{self.diamond_interval_minutes} นาที"
+                    )
             else:
                 self.diamond_preview_signal.emit(
                     slot_img, val, False,
@@ -1532,25 +1475,80 @@ class MacroWorker(QThread):
                     )
                     self.gold_disposal_stage = None
 
-                all_x, all_y = self.get_region_ranges(self.all_search_region, w_img, h_img, (0.35, 0.65), (0.35, 0.75))
-                all_result = None
-                if self.gold_disposal_stage == "await_all":
-                    all_result = self.find_image(bg_img, TEMPLATES["all"], self.thresholds["all"], x_range=all_x, y_range=all_y)
-                if self.gold_disposal_stage == "await_all" and all_result and all_result[0] is not None:
-                    x_all, y_all, val_all = all_result
-                    match_status["all"] = (True, val_all)
-                    self.match_signal.emit(match_status)
-                    self.bg_click(self.hwnd, x_all, y_all)
-                    self.gold_disposal_stage = "await_confirm"
-                    time.sleep(0.5)
+                if self.gold_disposal_stage == "await_destroy":
+                    dest_x, dest_y = self.get_region_ranges(
+                        self.destroy_search_region,
+                        w_img,
+                        h_img,
+                        (0.25, 0.85),
+                        (0.15, 0.90)
+                    )
+                    destroy_result = self.find_image(
+                        bg_img,
+                        TEMPLATES["destroy"],
+                        self.thresholds["destroy"],
+                        x_range=dest_x,
+                        y_range=dest_y
+                    )
+                    if (
+                        destroy_result
+                        and destroy_result[0] is not None
+                    ):
+                        x, y, val = destroy_result
+                        match_status["destroy"] = (True, val)
+                        self.match_signal.emit(match_status)
+                        self.bg_click(self.hwnd, x, y)
+                        self.gold_disposal_stage = "await_all"
+                        time.sleep(self.delays["destroy"])
+                    else:
+                        time.sleep(0.3)
                     continue
-                else:
-                    match_status["all"], match_status["confirm"] = (False, all_result[2] if all_result else 0.0), (False, 0.0)
+
+                if self.gold_disposal_stage == "await_all":
+                    all_x, all_y = self.get_region_ranges(
+                        self.all_search_region,
+                        w_img,
+                        h_img,
+                        (0.35, 0.65),
+                        (0.35, 0.75)
+                    )
+                    all_result = self.find_image(
+                        bg_img,
+                        TEMPLATES["all"],
+                        self.thresholds["all"],
+                        x_range=all_x,
+                        y_range=all_y
+                    )
+                    if all_result and all_result[0] is not None:
+                        x_all, y_all, val_all = all_result
+                        match_status["all"] = (True, val_all)
+                        self.match_signal.emit(match_status)
+                        self.bg_click(self.hwnd, x_all, y_all)
+                        self.gold_disposal_stage = "await_confirm"
+                        time.sleep(0.5)
+                    else:
+                        time.sleep(0.3)
+                    continue
 
                 if self.gold_disposal_stage == "await_confirm":
-                    conf_x, conf_y = self.get_region_ranges(self.confirm_search_region, w_img, h_img, (0.35, 0.65), (0.35, 0.75))
-                    confirm_result = self.find_image(bg_img, TEMPLATES["confirm"], self.thresholds["confirm"], x_range=conf_x, y_range=conf_y)
-                    if confirm_result and confirm_result[0] is not None:
+                    conf_x, conf_y = self.get_region_ranges(
+                        self.confirm_search_region,
+                        w_img,
+                        h_img,
+                        (0.35, 0.65),
+                        (0.35, 0.75)
+                    )
+                    confirm_result = self.find_image(
+                        bg_img,
+                        TEMPLATES["confirm"],
+                        self.thresholds["confirm"],
+                        x_range=conf_x,
+                        y_range=conf_y
+                    )
+                    if (
+                        confirm_result
+                        and confirm_result[0] is not None
+                    ):
                         x_conf, y_conf, val_conf = confirm_result
                         match_status["confirm"] = (True, val_conf)
                         self.match_signal.emit(match_status)
@@ -1560,21 +1558,10 @@ class MacroWorker(QThread):
                     else:
                         time.sleep(0.3)
                     continue
-                
-                dest_x, dest_y = self.get_region_ranges(self.destroy_search_region, w_img, h_img, (0.25, 0.85), (0.15, 0.90))
-                destroy_result = None
-                if self.gold_disposal_stage == "await_destroy":
-                    destroy_result = self.find_image(bg_img, TEMPLATES["destroy"], self.thresholds["destroy"], x_range=dest_x, y_range=dest_y)
-                if self.gold_disposal_stage == "await_destroy" and destroy_result and destroy_result[0] is not None:
-                    x, y, val = destroy_result
-                    match_status["destroy"] = (True, val)
-                    self.match_signal.emit(match_status)
-                    self.bg_click(self.hwnd, x, y)
-                    self.gold_disposal_stage = "await_all"
-                    time.sleep(self.delays["destroy"])
-                    continue
-                else:
-                    match_status["destroy"] = (False, destroy_result[2] if destroy_result else 0.0)
+
+                match_status["all"] = (False, 0.0)
+                match_status["confirm"] = (False, 0.0)
+                match_status["destroy"] = (False, 0.0)
 
                 gold_ore_path, gold_text_path = "templates/gold_ore.png", "templates/gold_text.png"
                 preview_ore_img, preview_text_img = np.zeros((10, 10, 3), dtype=np.uint8), np.zeros((10, 10, 3), dtype=np.uint8)
@@ -1583,10 +1570,7 @@ class MacroWorker(QThread):
                 gold_x, gold_y = self.get_region_ranges(self.gold_search_region, w_img, h_img, (0.25, 0.85), (0.15, 0.90))
                 ore_result = self.find_image(bg_img, gold_ore_path, 0.72, x_range=gold_x, y_range=gold_y)
                 if ore_result: preview_ore_score = ore_result[2]
-                if (
-                    ore_result and ore_result[0] is not None
-                    and time.time() >= self.gold_disposal_cooldown_until
-                ):
+                if ore_result and ore_result[0] is not None:
                     ore_x, ore_y, ore_val = ore_result
                     h_img, w_img, _ = bg_img.shape
                     abs_ore_path = self.resolve_template_path(gold_ore_path)
@@ -1607,22 +1591,39 @@ class MacroWorker(QThread):
                     estimated_count = self.observe_gold_count_change(
                         bg_img, ore_x, ore_y
                     )
+                    can_dispose_now = (
+                        time.time()
+                        >= self.gold_disposal_cooldown_until
+                    )
                     random_target_reached = (
                         estimated_count is not None
                         and self.gold_discard_target is not None
                         and estimated_count >= self.gold_discard_target
                     )
-                    count_result = self.find_gold_count(bg_img, ore_x, ore_y, target_thresh)
-                    if count_result or random_target_reached:
+                    count_result = (
+                        self.find_gold_count(
+                            bg_img, ore_x, ore_y, target_thresh
+                        )
+                        if can_dispose_now
+                        else None
+                    )
+                    if can_dispose_now and (
+                        count_result or random_target_reached
+                    ):
                         if random_target_reached:
                             count_result = (
-                                ore_x, ore_y, 1.0,
-                                np.zeros((10, 10, 3), dtype=np.uint8)
+                                ore_x,
+                                ore_y,
+                                1.0,
+                                np.zeros(
+                                    (10, 10, 3),
+                                    dtype=np.uint8
+                                )
                             )
                             self.log_signal.emit(
                                 f"[ระบบทอง] ถึงเป้าหมายสุ่ม "
                                 f"{self.gold_discard_target}/40 "
-                                f"กำลังทิ้งทอง"
+                                "กำลังทิ้งทอง"
                             )
                         count_x, count_y, count_score, count_crop = count_result
                         preview_text_score = count_score
@@ -1680,9 +1681,26 @@ class MainWindow(QMainWindow):
         self.private_settings_path = get_writable_path("private-settings.json")
         self.load_config()
         self.load_private_settings()
-        self.setWindowTitle("FiveM Farming Control")
-        self.resize(980, 700)
-        self.setMinimumSize(900, 640)
+        self.setWindowTitle("ระบบมาโครทิ้งทองอัตโนมัติ (Background)")
+        self.resize(760, 580)
+        self.setStyleSheet("""
+            QMainWindow { background-color: #f8fafc; }
+            QWidget { color: #334155; font-family: 'Segoe UI', sans-serif; }
+            QGroupBox { border: 1px solid #cbd5e1; border-radius: 8px; margin-top: 15px; font-weight: bold; font-size: 13px; color: #475569; background-color: #ffffff; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QFrame#Card { background-color: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; }
+            QLabel { font-size: 12px; }
+            QLabel#Title { font-size: 18px; font-weight: bold; color: #1e293b; }
+            QPushButton { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-weight: bold; font-size: 11px; padding: 6px 10px; }
+            QPushButton:hover { background-color: #f1f5f9; border: 1px solid #94a3b8; }
+            QPushButton#StartBtn { background-color: #0d9488; border: none; border-radius: 6px; color: white; font-weight: bold; font-size: 14px; padding: 12px; }
+            QPushButton#StartBtn:hover { background-color: #0f766e; }
+            QPushButton#StartBtn[running="true"] { background-color: #ef4444; }
+            QSlider::groove:horizontal { border: 1px solid #cbd5e1; height: 5px; background: #e2e8f0; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #0d9488; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
+            QSlider::sub-page:horizontal { background: #0d9488; border-radius: 2px; }
+            QTextEdit#Log { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 11px; }
+        """)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1691,10 +1709,10 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(12)
 
         header_layout = QHBoxLayout()
-        title_label = QLabel("Farming Control")
+        title_label = QLabel("มาโครทิ้งทอง FiveM Background")
         title_label.setObjectName("Title")
         self.status_bar = QFrame()
-        self.status_bar.setObjectName("StatusBar")
+        self.status_bar.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 4px 12px; }")
         status_bar_layout = QHBoxLayout(self.status_bar)
         status_bar_layout.setContentsMargins(5, 2, 5, 2)
         self.status_dot = QLabel("⬤")
@@ -1704,11 +1722,6 @@ class MainWindow(QMainWindow):
         status_bar_layout.addWidget(self.status_text)
         header_layout.addWidget(title_label)
         header_layout.addStretch()
-        self.dark_mode_cb = ToggleSwitch("โหมดมืด")
-        self.dark_mode_cb.setMinimumWidth(145)
-        self.dark_mode_cb.setChecked(self.dark_mode)
-        self.dark_mode_cb.toggled.connect(self.on_dark_mode_toggled)
-        header_layout.addWidget(self.dark_mode_cb)
         header_layout.addWidget(self.status_bar)
         main_layout.addLayout(header_layout)
 
@@ -1718,20 +1731,14 @@ class MainWindow(QMainWindow):
         left_column = QVBoxLayout()
         left_column.setSpacing(10)
         
-        self.left_tabs = QTabWidget()
+        left_tabs = QTabWidget()
         
         # Tab 1: Configuration
-        tab_config = QScrollArea()
-        tab_config.setWidgetResizable(True)
-        tab_config.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        tab_config.setFrameShape(QFrame.NoFrame)
-        config_scroll_content = QWidget()
-        config_tab_layout = QVBoxLayout(config_scroll_content)
-        config_tab_layout.setContentsMargins(6, 6, 6, 10)
+        tab_config = QWidget()
+        config_tab_layout = QVBoxLayout(tab_config)
         config_tab_layout.setSpacing(8)
-        tab_config.setWidget(config_scroll_content)
         
-        setup_box = QGroupBox("พื้นที่ตรวจจับ")
+        setup_box = QGroupBox("ตั้งค่าขอบเขตพิกัดหน้าต่างเกม")
         setup_layout = QVBoxLayout(setup_box)
         setup_layout.setSpacing(8)
         self.hud_lbl = QLabel(self.get_region_text(self.hud_region))
@@ -1759,7 +1766,7 @@ class MainWindow(QMainWindow):
         setup_layout.addWidget(af_btn)
         config_tab_layout.addWidget(setup_box)
 
-        sliders_box = QGroupBox("เกณฑ์อาหารและน้ำ")
+        sliders_box = QGroupBox("เกณฑ์ขั้นต่ำหลอดอาหาร/น้ำ (พิกเซลสีชมพู)")
         sliders_layout = QVBoxLayout(sliders_box)
         sliders_layout.addWidget(QLabel("เกณฑ์หลอดอาหาร (หากน้อยกว่าจะกิน):"))
         self.hunger_val_lbl = QLabel(f"{self.hunger_limit}")
@@ -1779,7 +1786,7 @@ class MainWindow(QMainWindow):
         sliders_layout.addWidget(thirst_slider)
         config_tab_layout.addWidget(sliders_box)
 
-        roi_box = QGroupBox("ทดสอบระบบ")
+        roi_box = QGroupBox("ระบบทดสอบการทำงาน")
         roi_layout = QVBoxLayout(roi_box)
         self.test_feed_btn = QPushButton("ทดสอบระบบกินข้าว/น้ำ")
         self.test_feed_btn.setStyleSheet("QPushButton { background-color: #0284c7; border: none; color: white; font-weight: bold; font-size: 12px; border-radius: 6px; padding: 8px; }")
@@ -1791,12 +1798,12 @@ class MainWindow(QMainWindow):
         roi_layout.addWidget(self.test_store_btn)
         config_tab_layout.addWidget(roi_box)
 
-        toggle_box = QGroupBox("การทำงานอัตโนมัติ")
+        toggle_box = QGroupBox("เปิด/ปิดฟังก์ชัน")
         toggle_layout = QVBoxLayout(toggle_box)
-        self.auto_feed_cb = ToggleSwitch("ระบบกินข้าว/น้ำอัตโนมัติ")
+        self.auto_feed_cb = QCheckBox("ระบบกินข้าว/น้ำอัตโนมัติ")
         self.auto_feed_cb.setChecked(self.auto_feed_enabled)
         self.auto_feed_cb.toggled.connect(self.on_auto_feed_toggled)
-        self.auto_store_cb = ToggleSwitch("เปิดระบบจัดการเพชรอัตโนมัติ")
+        self.auto_store_cb = QCheckBox("เปิดระบบจัดการเพชรอัตโนมัติ")
         self.auto_store_cb.setChecked(self.auto_store_enabled)
         self.auto_store_cb.toggled.connect(self.on_auto_store_toggled)
         self.diamond_mode_combo = QComboBox()
@@ -1831,9 +1838,9 @@ class MainWindow(QMainWindow):
         def create_crop_row(layout, label_text, template_name, region_key):
             row_layout = QHBoxLayout()
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("font-weight: bold; font-size: 11px;")
+            lbl.setStyleSheet("font-weight: bold; color: #475569; font-size: 11px;")
             lbl.setMinimumWidth(180)
-            btn_preview = QPushButton("ดู")
+            btn_preview = QPushButton("👁️")
             btn_preview.setFixedWidth(30)
             btn_preview.setToolTip("พรีวิวรูปที่ครอปไว้")
             btn_preview.setStyleSheet("QPushButton { font-size: 14px; padding: 2px; }")
@@ -1842,7 +1849,7 @@ class MainWindow(QMainWindow):
             btn_crop.setStyleSheet("QPushButton { font-size: 11px; padding: 4px; }")
             btn_crop.clicked.connect(lambda checked=False, tn=template_name: self.crop_template_wizard(tn))
             btn_reg = QPushButton("พื้นที่สแกน")
-            btn_reg.setStyleSheet("QPushButton { font-size: 11px; padding: 4px; }")
+            btn_reg.setStyleSheet("QPushButton { font-size: 11px; padding: 4px; background-color: #f8fafc; border: 1px solid #cbd5e1; }")
             btn_reg.clicked.connect(lambda checked=False, rk=region_key: self.select_item_search_region(rk))
             row_layout.addWidget(lbl)
             row_layout.addWidget(btn_preview)
@@ -1850,7 +1857,7 @@ class MainWindow(QMainWindow):
             row_layout.addWidget(btn_reg)
             layout.addLayout(row_layout)
             
-        g_gold = QGroupBox("ทองในกระเป๋า")
+        g_gold = QGroupBox("🔶 หมวดฟาร์มทอง (ในกระเป๋าตัวละคร)")
         l_gold = QVBoxLayout(g_gold)
         create_crop_row(l_gold, "รูปแร่ทองคำ (ก้อนทอง):", "gold_ore.png", "gold_ore")
         create_crop_row(l_gold, "รูปตัวเลข (แร่ทอง):", "gold_text.png", "gold_text")
@@ -1859,12 +1866,12 @@ class MainWindow(QMainWindow):
         create_crop_row(l_gold, "ปุ่มตกลง (กระเป๋า):", "confirm.png", "confirm")
         crops_scroll_layout.addWidget(g_gold)
         
-        g_diamond = QGroupBox("เพชรในกระเป๋า")
+        g_diamond = QGroupBox("💎 หมวดเพชร (ตรวจนับในกระเป๋า)")
         l_diamond = QVBoxLayout(g_diamond)
         create_crop_row(l_diamond, "รูปเพชร (กระเป๋าตัวละคร):", "diamond_icon.png", "diamond")
         crops_scroll_layout.addWidget(g_diamond)
         
-        g_trunk = QGroupBox("พื้นที่เก็บของท้ายรถ")
+        g_trunk = QGroupBox("🚗 หมวดเก็บลงท้ายรถ")
         l_trunk = QVBoxLayout(g_trunk)
         create_crop_row(l_trunk, "รูปเพชร (ท้ายรถ):", "diamond_trunk.png", "diamond_trunk")
         create_crop_row(l_trunk, "ปุ่มเปิดท้ายรถ:", "trunk_ready.png", "trunk_ready")
@@ -1872,7 +1879,7 @@ class MainWindow(QMainWindow):
         create_crop_row(l_trunk, "ปุ่มตกลง (ท้ายรถ):", "confirm_trunk.png", "confirm_trunk")
         crops_scroll_layout.addWidget(g_trunk)
         
-        g_other = QGroupBox("รายการอื่น")
+        g_other = QGroupBox("⚙️ หมวดอื่นๆ")
         l_other = QVBoxLayout(g_other)
         create_crop_row(l_other, "ปุ่มเริ่มงาน (Auto Farm):", "auto_farm.png", "auto_farm")
         crops_scroll_layout.addWidget(g_other)
@@ -1885,9 +1892,9 @@ class MainWindow(QMainWindow):
         crops_scroll.setWidget(crops_scroll_content)
         crops_tab_layout.addWidget(crops_scroll)
         
-        self.left_tabs.addTab(tab_config, "ตั้งค่าหลัก")
-        self.left_tabs.addTab(tab_crops, "รูปตรวจจับ")
-        left_column.addWidget(self.left_tabs)
+        left_tabs.addTab(tab_config, "ตั้งค่าพิกัด & เกณฑ์")
+        left_tabs.addTab(tab_crops, "ลงทะเบียนรูปภาพ (Crop)")
+        left_column.addWidget(left_tabs)
 
         right_panel = QVBoxLayout()
         monitors_layout = QHBoxLayout()
@@ -1968,9 +1975,9 @@ class MainWindow(QMainWindow):
         diamond_data_layout.addWidget(self.lbl_diamond_score)
         diamond_data_layout.addWidget(self.lbl_diamond_status)
         diamond_layout.addLayout(diamond_data_layout)
-        self.preview_tabs.addTab(self.hud_tab, "อาหารและน้ำ")
-        self.preview_tabs.addTab(self.gold_tab, "ทอง")
-        self.preview_tabs.addTab(self.diamond_tab, "เพชร")
+        self.preview_tabs.addTab(self.hud_tab, "พรีวิวหลอดอาหาร/น้ำ")
+        self.preview_tabs.addTab(self.gold_tab, "พรีวิวสแกนเศษทองคำ")
+        self.preview_tabs.addTab(self.diamond_tab, "พรีวิวสแกนเพชร")
         right_panel.addWidget(self.preview_tabs)
 
         right_panel.addWidget(QLabel("บันทึกการทำงานของบอท:"))
@@ -1980,6 +1987,7 @@ class MainWindow(QMainWindow):
         right_panel.addWidget(self.log_console)
         content_layout.addLayout(left_column, 3)
         content_layout.addLayout(right_panel, 4)
+        main_layout.addLayout(content_layout)
 
         footer_layout = QHBoxLayout()
         self.start_btn = QPushButton("เริ่มทำงานบอท [F9]")
@@ -1987,12 +1995,10 @@ class MainWindow(QMainWindow):
         self.start_btn.setProperty("running", "false")
         self.start_btn.setMinimumHeight(45)
         self.start_btn.clicked.connect(self.toggle_macro)
-        self.instruct_lbl = QLabel("<b>ปุ่มลัด</b><br>F9  เริ่ม / หยุดชั่วคราว<br>F10  ปิดโปรแกรม")
-        self.instruct_lbl.setStyleSheet("font-size: 11px;")
+        instruct_lbl = QLabel("<b>คู่มือปุ่มลัด (Hotkey):</b><br>🟢 <b>[F9]</b> - เริ่ม / หยุดบอทชั่วคราว<br>🔴 <b>[F10]</b> - ปิดโปรแกรม")
+        instruct_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
         footer_layout.addWidget(self.start_btn, 3)
-        footer_layout.addWidget(self.instruct_lbl, 2)
-
-        main_layout.addLayout(content_layout)
+        footer_layout.addWidget(instruct_lbl, 2)
         main_layout.addLayout(footer_layout)
 
         self.worker = MacroWorker()
@@ -2008,65 +2014,7 @@ class MainWindow(QMainWindow):
 
         keyboard.add_hotkey("F9", self.toggle_macro)
         keyboard.add_hotkey("F10", self.close)
-        self.apply_theme()
         self.write_log("ยินดีต้อนรับสู่แผงควบคุมระบบฟาร์มทิ้งทองอัตโนมัติ (Background)")
-
-    def apply_theme(self):
-        if self.dark_mode:
-            colors = {
-                "window": "#111315", "panel": "#17191f", "card": "#1c1f26",
-                "field": "#14171a", "text": "#e7e9ec", "muted": "#9299a3",
-                "border": "#292d35", "hover": "#242832", "title": "#ffffff",
-            }
-        else:
-            colors = {
-                "window": "#f5f6f7", "panel": "#ffffff", "card": "#f0f2f4",
-                "field": "#ffffff", "text": "#252a31", "muted": "#737b86",
-                "border": "#dfe3e8", "hover": "#f0f2f4", "title": "#171a1f",
-            }
-        self.setStyleSheet(f"""
-            QMainWindow {{ background: {'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #252a35, stop:0.42 #111315, stop:1 #16254a)' if self.dark_mode else colors['window']}; }}
-            QWidget {{ color: {colors['text']}; font-family: 'Segoe UI', sans-serif; }}
-            QGroupBox {{ border: 1px solid {colors['border']}; border-radius: 10px; margin-top: 18px; font-weight: 600; font-size: 12px; color: {colors['text']}; background-color: {colors['panel']}; }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
-            QFrame#Card {{ background-color: {colors['card']}; border: none; border-radius: 10px; }}
-            QFrame#StatusBar {{ background-color: {colors['panel']}; border: 1px solid {colors['border']}; border-radius: 14px; padding: 4px 12px; }}
-            QLabel {{ font-size: 12px; }}
-            QLabel#Title {{ font-size: 20px; font-weight: 700; color: {colors['title']}; }}
-            QPushButton {{ background-color: {colors['panel']}; border: 1px solid {colors['border']}; border-radius: 8px; font-weight: 600; font-size: 11px; padding: 7px 11px; }}
-            QPushButton:hover {{ background-color: {colors['hover']}; }}
-            QPushButton:pressed {{ background-color: {colors['card']}; }}
-            QPushButton#StartBtn {{ background-color: #169c8c; border: none; border-radius: 9px; color: white; font-weight: 700; font-size: 14px; padding: 12px; }}
-            QPushButton#StartBtn:hover {{ background-color: #128576; }}
-            QPushButton#StartBtn[running="true"] {{ background-color: #df4b55; }}
-            QTabWidget::pane {{ border: 1px solid {colors['border']}; border-radius: 9px; background: {colors['panel']}; top: -1px; }}
-            QTabBar::tab {{ background: transparent; color: {colors['muted']}; border: none; border-bottom: 2px solid transparent; padding: 8px 13px; }}
-            QTabBar::tab:hover {{ color: {colors['text']}; }}
-            QTabBar::tab:selected {{ color: #18a999; border-bottom: 2px solid #18a999; font-weight: 600; }}
-            QScrollArea, QScrollArea > QWidget > QWidget {{ background: {colors['panel']}; border: none; }}
-            QComboBox, QLineEdit {{ background-color: {colors['field']}; color: {colors['text']}; border: 1px solid {colors['border']}; border-radius: 7px; padding: 6px 8px; }}
-            QComboBox QAbstractItemView {{ background-color: {colors['panel']}; color: {colors['text']}; selection-background-color: #169c8c; }}
-            QSlider::groove:horizontal {{ border: none; height: 4px; background: {colors['card']}; border-radius: 2px; }}
-            QSlider::handle:horizontal {{ background: #169c8c; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
-            QSlider::sub-page:horizontal {{ background: #169c8c; border-radius: 2px; }}
-            QTextEdit#Log {{ background-color: {colors['field']}; color: {colors['text']}; border: 1px solid {colors['border']}; border-radius: 9px; padding: 6px; font-family: 'Consolas', monospace; font-size: 11px; }}
-            QCheckBox {{ spacing: 6px; }}
-            QToolTip {{ background-color: {colors['card']}; color: {colors['text']}; border: 1px solid {colors['border']}; padding: 4px; }}
-        """)
-        muted_style = f"color: {colors['muted']}; font-size: 11px;"
-        for label in (self.hud_lbl, self.bag_lbl, self.af_lbl, self.instruct_lbl):
-            label.setStyleSheet(muted_style)
-        preview_style = f"border: 1px solid {colors['border']}; background-color: {colors['card']};"
-        for label in (
-            self.lbl_crop, self.lbl_mask, self.lbl_gold_ore,
-            self.lbl_gold_text, self.lbl_diamond_slot,
-        ):
-            label.setStyleSheet(preview_style)
-
-    def on_dark_mode_toggled(self, checked):
-        self.dark_mode = bool(checked)
-        self.apply_theme()
-        self.save_config()
 
     def sync_worker_config(self):
         for k, v in self.thresholds.items(): self.worker.set_config(k, "threshold", v)
@@ -2116,13 +2064,10 @@ class MainWindow(QMainWindow):
                 self.monitor_cards[name]["conf"].setText(f"{confidence*100:.1f}%")
                 if matched:
                     self.monitor_cards[name]["led"].setStyleSheet("color: #0d9488; font-size: 18px;")
-                    matched_bg = "#153b36" if self.dark_mode else "#f0fdf4"
-                    self.monitor_cards[name]["frame"].setStyleSheet(f"border: 1px solid #0d9488; background-color: {matched_bg};")
+                    self.monitor_cards[name]["frame"].setStyleSheet("border: 1px solid #0d9488; background-color: #f0fdf4;")
                 else:
                     self.monitor_cards[name]["led"].setStyleSheet("color: #94a3b8; font-size: 16px;")
-                    border = "#334155" if self.dark_mode else "#cbd5e1"
-                    background = "#1e293b" if self.dark_mode else "#f1f5f9"
-                    self.monitor_cards[name]["frame"].setStyleSheet(f"border: 1px solid {border}; background-color: {background};")
+                    self.monitor_cards[name]["frame"].setStyleSheet("border: 1px solid #cbd5e1; background-color: #f1f5f9;")
 
     @Slot(np.ndarray, np.ndarray, int, int)
     def update_hud_preview(self, crop, mask, hunger_px, thirst_px):
@@ -2221,7 +2166,6 @@ class MainWindow(QMainWindow):
         self.confirm_trunk_search_region = None
         self.hunger_limit, self.thirst_limit = 20, 20
         self.auto_feed_enabled, self.auto_store_enabled = True, True
-        self.dark_mode = False
         self.diamond_mode = "car_timer"
         self.diamond_interval_minutes = 20
         self.discord_webhook_url = ""
@@ -2251,7 +2195,6 @@ class MainWindow(QMainWindow):
                     self.thirst_limit = data.get("thirst_limit", 20)
                     self.auto_feed_enabled = data.get("auto_feed_enabled", True)
                     self.auto_store_enabled = data.get("auto_store_enabled", True)
-                    self.dark_mode = bool(data.get("dark_mode", False))
                     self.diamond_mode = data.get("diamond_mode", "car_timer")
                     self.diamond_interval_minutes = int(data.get("diamond_interval_minutes", 20))
                     self.reference_resolution = data.get("reference_resolution", None)
@@ -2275,7 +2218,6 @@ class MainWindow(QMainWindow):
                 "confirm_trunk_search_region": self.confirm_trunk_search_region,
                 "hunger_limit": self.hunger_limit, "thirst_limit": self.thirst_limit,
                 "auto_feed_enabled": self.auto_feed_enabled, "auto_store_enabled": self.auto_store_enabled,
-                "dark_mode": self.dark_mode,
                 "diamond_mode": self.diamond_mode,
                 "diamond_interval_minutes": self.diamond_interval_minutes,
                 "reference_resolution": self.reference_resolution,
