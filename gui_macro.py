@@ -38,7 +38,9 @@ from PySide6.QtWidgets import (
     QGroupBox, QSystemTrayIcon, QMenu, QCheckBox, QTabWidget, QScrollArea,
     QComboBox, QLineEdit
 )
-from PySide6.QtGui import QIcon, QAction, QColor, QFont, QPainter, QPen, QPixmap, QImage
+from PySide6.QtGui import (
+    QIcon, QAction, QColor, QFont, QPainter, QPen, QPixmap, QImage, QPalette
+)
 
 def get_resource_path(relative_path):
     try:
@@ -53,6 +55,48 @@ def get_writable_path(filename):
     else:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
+
+def apply_fixed_light_theme(app):
+    """Keep the app colors independent from the Windows light/dark setting."""
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor("#f8fafc"))
+    palette.setColor(QPalette.WindowText, QColor("#334155"))
+    palette.setColor(QPalette.Base, QColor("#ffffff"))
+    palette.setColor(QPalette.AlternateBase, QColor("#f1f5f9"))
+    palette.setColor(QPalette.ToolTipBase, QColor("#ffffff"))
+    palette.setColor(QPalette.ToolTipText, QColor("#334155"))
+    palette.setColor(QPalette.Text, QColor("#334155"))
+    palette.setColor(QPalette.Button, QColor("#ffffff"))
+    palette.setColor(QPalette.ButtonText, QColor("#334155"))
+    palette.setColor(QPalette.BrightText, QColor("#ffffff"))
+    palette.setColor(QPalette.Link, QColor("#0d9488"))
+    palette.setColor(QPalette.Highlight, QColor("#0d9488"))
+    palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    palette.setColor(
+        QPalette.Disabled, QPalette.WindowText, QColor("#94a3b8")
+    )
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor("#94a3b8"))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#94a3b8"))
+    palette.setColor(QPalette.Disabled, QPalette.Base, QColor("#f1f5f9"))
+    app.setPalette(palette)
+
+def force_light_title_bar(window):
+    """Prevent the native Windows title bar from following Dark Mode."""
+    try:
+        hwnd = int(window.winId())
+        disabled = ctypes.c_int(0)
+        for attribute in (20, 19):
+            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                attribute,
+                ctypes.byref(disabled),
+                ctypes.sizeof(disabled),
+            )
+            if result == 0:
+                break
+    except Exception:
+        pass
 
 # ==========================================
 # HARDWARE-LEVEL SCANCODE KEYBOARD SENDER (SendInput API)
@@ -214,6 +258,7 @@ class MacroWorker(QThread):
         self.force_feed_test = False
         self.force_store_test = False
         self.last_hud_check_time = 0.0
+        self.last_feeding_attempt_time = 0.0
         self.last_diamond_check_time = 0.0
         self.last_diamond_storage_time = 0.0
         self.diamond_pass_streak = 0
@@ -240,6 +285,13 @@ class MacroWorker(QThread):
         self.gold_disposal_stage = None
         self.gold_disposal_started_at = 0.0
         self.gold_disposal_cooldown_until = 0.0
+        self.capture_failure_streak = 0
+        self.runtime_error_streak = 0
+        self.last_runtime_error_occurrence_time = 0.0
+        self.focus_failure_streak = 0
+        self.last_watchdog_reset_time = 0.0
+        self.watchdog_reconnecting = False
+        self.watchdog_resume_at = 0.0
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -275,6 +327,56 @@ class MacroWorker(QThread):
     def reset_diamond_cycle(self):
         self.diamond_cycle_started_at = time.time()
         self.diamond_full_streak = 0
+
+    def reset_runtime_watchdog(self, reason):
+        """Reset transient worker state without stopping the app or bot."""
+        now = time.time()
+        self.hwnd = None
+        if now - self.last_watchdog_reset_time < 15.0:
+            return False
+        self.last_watchdog_reset_time = now
+        self.watchdog_reconnecting = True
+        self.watchdog_resume_at = now + 10.0
+        self.capture_failure_streak = 0
+        self.runtime_error_streak = 0
+        self.last_runtime_error_occurrence_time = 0.0
+        self.focus_failure_streak = 0
+        self.last_runtime_error = ""
+        self.last_runtime_error_time = 0.0
+        self.last_hud_check_time = 0.0
+        self.last_feeding_attempt_time = now
+        self.last_diamond_check_time = now
+
+        # A reconnect may show a different game session. Cancel only transient
+        # gold UI/count state so the first round safely re-syncs at 30/40.
+        self.gold_discard_target = None
+        self.gold_estimated_count = 0
+        self.gold_count_synced = False
+        self.gold_count_candidate = None
+        self.gold_count_candidate_streak = 0
+        self.gold_count_committed = None
+        self.gold_disposal_stage = None
+        self.gold_disposal_started_at = 0.0
+        self.gold_disposal_cooldown_until = self.watchdog_resume_at
+
+        resume_text = (
+            "บอทจะทำงานต่ออัตโนมัติ"
+            if self.is_running
+            else "เชื่อมต่อแล้วจะรอกด F9"
+        )
+        self.log_signal.emit(
+            f"[Watchdog] {reason} — รีระบบชั่วคราวแล้ว กำลังค้นหา FiveM ใหม่"
+        )
+        self.log_signal.emit(f"[Watchdog] {resume_text}")
+        self.connection_signal.emit(
+            False, "Watchdog กำลังเชื่อมต่อ FiveM ใหม่..."
+        )
+        return True
+
+    def record_focus_failure(self, reason):
+        self.focus_failure_streak += 1
+        if self.focus_failure_streak >= 3:
+            self.reset_runtime_watchdog(reason)
 
     def send_diamond_full_webhook(self):
         if not self.discord_webhook_url:
@@ -852,29 +954,60 @@ class MacroWorker(QThread):
 
     def activate_game_window(self):
         try:
+            if not self.hwnd or not win32gui.IsWindow(self.hwnd):
+                self.log_signal.emit("[ระบบ] ไม่พบหน้าต่าง FiveM สำหรับรับโฟกัส")
+                self.record_focus_failure("ไม่พบหน้าต่าง FiveM สำหรับรับโฟกัส")
+                return None
             if win32gui.IsIconic(self.hwnd):
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-                time.sleep(0.3)
-            try: win32gui.SetForegroundWindow(self.hwnd)
-            except Exception:
-                keyboard.send("alt")
-                time.sleep(0.1)
-                win32gui.SetForegroundWindow(self.hwnd)
-            time.sleep(0.3)
+                time.sleep(0.4)
             geometry = self.get_client_geometry()
             if not geometry:
+                self.log_signal.emit("[ระบบ] อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้")
+                self.record_focus_failure("อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้ 3 ครั้งติด")
                 return None
-            cx, cy = geometry[0] + geometry[2] // 2, geometry[1] + geometry[3] // 2
-            orig_x, orig_y = win32api.GetCursorPos()
-            win32api.SetCursorPos((cx, cy))
-            time.sleep(0.1)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            time.sleep(0.05)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            time.sleep(0.2)
-            return (orig_x, orig_y)
-        except Exception as e:
-            self.log_signal.emit(f"[Auto-Feed Error] Focus game failed: {e}")
+            orig_pos = win32api.GetCursorPos()
+            focus_error = None
+            try:
+                win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
+                win32gui.BringWindowToTop(self.hwnd)
+                win32gui.SetForegroundWindow(self.hwnd)
+            except Exception as error:
+                focus_error = error
+                try:
+                    keyboard.send("alt")
+                    time.sleep(0.1)
+                    win32gui.BringWindowToTop(self.hwnd)
+                    win32gui.SetForegroundWindow(self.hwnd)
+                except Exception as retry_error:
+                    focus_error = retry_error
+            time.sleep(0.3)
+            if win32gui.GetForegroundWindow() != self.hwnd:
+                cx = geometry[0] + geometry[2] // 2
+                cy = geometry[1] + geometry[3] // 2
+                win32api.SetCursorPos((cx, cy))
+                time.sleep(0.1)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(0.25)
+            if win32gui.GetForegroundWindow() != self.hwnd:
+                detail = f": {focus_error}" if focus_error else ""
+                self.log_signal.emit(
+                    "[ระบบ] ไม่สามารถโฟกัส FiveM ได้"
+                    f"{detail} ยกเลิกรอบนี้เพื่อไม่ให้ส่งปุ่มผิดหน้าต่าง"
+                )
+                try:
+                    win32api.SetCursorPos(orig_pos)
+                except Exception:
+                    pass
+                self.record_focus_failure("โฟกัส FiveM ไม่สำเร็จ 3 ครั้งติด")
+                return None
+            self.focus_failure_streak = 0
+            return orig_pos
+        except Exception as error:
+            self.log_signal.emit(f"[ระบบ] โฟกัส FiveM ไม่สำเร็จ: {error}")
+            self.record_focus_failure("โฟกัส FiveM เกิดข้อผิดพลาด 3 ครั้งติด")
             return None
 
     def is_inventory_open(self, bg_img=None):
@@ -988,6 +1121,9 @@ class MacroWorker(QThread):
     def execute_feeding_sequence(self, need_food, need_water):
         self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
         orig_pos = self.activate_game_window()
+        if orig_pos is None:
+            self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
+            return False
         send_key_direct("esc")
         time.sleep(1.0)
         send_key_direct("x")
@@ -1032,6 +1168,7 @@ class MacroWorker(QThread):
             try: win32api.SetCursorPos(orig_pos)
             except: pass
         self.log_signal.emit("[ระบบป้อนอาหาร] กินเสร็จเรียบร้อย!")
+        return True
 
     def check_and_run_auto_feed(self):
         bg_img = self.capture_background(self.hwnd)
@@ -1053,7 +1190,12 @@ class MacroWorker(QThread):
         hunger_px = np.sum(mask[:, :crop_w//2] > 0)
         thirst_px = np.sum(mask[:, crop_w//2:] > 0)
         need_food, need_water = hunger_px < self.hunger_limit, thirst_px < self.thirst_limit
-        if need_food or need_water: self.execute_feeding_sequence(need_food, need_water)
+        if need_food or need_water:
+            now = time.time()
+            if now - self.last_feeding_attempt_time < 60.0:
+                return
+            self.last_feeding_attempt_time = now
+            self.execute_feeding_sequence(need_food, need_water)
 
     def double_click_at(self, abs_x, abs_y):
         try:
@@ -1443,12 +1585,33 @@ class MacroWorker(QThread):
                         time.sleep(2)
                         continue
                 if not win32gui.IsWindow(self.hwnd):
-                    self.hwnd = None
-                    self.connection_signal.emit(False, "การเชื่อมต่อขาดหาย...")
+                    self.reset_runtime_watchdog(
+                        "หน้าต่าง FiveM ถูกปิดหรือมีการรีเกม"
+                    )
+                    time.sleep(0.5)
                     continue
                 bg_img = self.capture_background(self.hwnd)
                 if bg_img is None:
+                    self.capture_failure_streak += 1
+                    if self.capture_failure_streak >= 5:
+                        self.reset_runtime_watchdog(
+                            "จับภาพ FiveM ไม่สำเร็จ 5 ครั้งติด"
+                        )
                     time.sleep(1.5)
+                    continue
+                self.capture_failure_streak = 0
+                if self.watchdog_reconnecting:
+                    self.watchdog_reconnecting = False
+                    resume_text = (
+                        "บอทกลับมาทำงานต่ออัตโนมัติ"
+                        if self.is_running
+                        else "ระบบพร้อมแล้ว กด F9 เพื่อเริ่มบอท"
+                    )
+                    self.log_signal.emit(
+                        f"[Watchdog] เชื่อมต่อ FiveM ใหม่สำเร็จ — {resume_text}"
+                    )
+                if time.time() < self.watchdog_resume_at:
+                    time.sleep(0.5)
                     continue
                 self.save_latest_gold_debug_capture(bg_img)
                 if self.hud_region: self.process_hud_preview(bg_img)
@@ -1660,10 +1823,18 @@ class MacroWorker(QThread):
             except Exception as error:
                 message = f"{type(error).__name__}: {error}"
                 now = time.time()
+                if now - self.last_runtime_error_occurrence_time > 10.0:
+                    self.runtime_error_streak = 0
+                self.runtime_error_streak += 1
+                self.last_runtime_error_occurrence_time = now
                 if message != self.last_runtime_error or now - self.last_runtime_error_time > 10.0:
                     self.log_signal.emit(f"[ข้อผิดพลาดในลูป] {message}")
                     self.last_runtime_error = message
                     self.last_runtime_error_time = now
+                if self.runtime_error_streak >= 5:
+                    self.reset_runtime_watchdog(
+                        "เกิดข้อผิดพลาดในลูป 5 ครั้งภายใน 10 วินาที"
+                    )
                 time.sleep(1.5)
 
     def stop(self):
@@ -1703,7 +1874,28 @@ class MainWindow(QMainWindow):
             QSlider::groove:horizontal { border: 1px solid #cbd5e1; height: 5px; background: #e2e8f0; border-radius: 2px; }
             QSlider::handle:horizontal { background: #0d9488; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
             QSlider::sub-page:horizontal { background: #0d9488; border-radius: 2px; }
-            QTextEdit#Log { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 11px; }
+            QTextEdit#Log { background-color: #ffffff; color: #334155; border: 1px solid #cbd5e1; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 11px; selection-background-color: #0d9488; selection-color: #ffffff; }
+            QTabWidget::pane { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; }
+            QTabBar::tab { background-color: #e2e8f0; color: #475569; border: 1px solid #cbd5e1; padding: 7px 12px; }
+            QTabBar::tab:selected { background-color: #ffffff; color: #0f766e; border-bottom-color: #ffffff; }
+            QTabBar::tab:hover:!selected { background-color: #f1f5f9; }
+            QWidget#ConfigTab, QWidget#CropsTab, QWidget#CropsScrollContent { background-color: #f8fafc; color: #334155; }
+            QWidget#PreviewTab { background-color: #ffffff; color: #334155; }
+            QWidget#CropsScrollViewport { background-color: #f8fafc; }
+            QComboBox, QLineEdit { background-color: #ffffff; color: #334155; border: 1px solid #94a3b8; border-radius: 4px; padding: 4px 7px; selection-background-color: #0d9488; selection-color: #ffffff; }
+            QComboBox:disabled, QLineEdit:disabled { background-color: #f1f5f9; color: #94a3b8; }
+            QComboBox::drop-down { background-color: #f1f5f9; border-left: 1px solid #cbd5e1; width: 24px; }
+            QComboBox QAbstractItemView { background-color: #ffffff; color: #334155; border: 1px solid #94a3b8; selection-background-color: #0d9488; selection-color: #ffffff; outline: none; }
+            QCheckBox { color: #334155; spacing: 6px; }
+            QScrollArea { background-color: #f8fafc; border: none; }
+            QScrollBar:vertical { background: #f1f5f9; width: 12px; margin: 0; }
+            QScrollBar::handle:vertical { background: #94a3b8; min-height: 24px; border-radius: 5px; margin: 2px; }
+            QScrollBar::handle:vertical:hover { background: #64748b; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar:horizontal { background: #f1f5f9; height: 12px; margin: 0; }
+            QScrollBar::handle:horizontal { background: #94a3b8; min-width: 24px; border-radius: 5px; margin: 2px; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+            QToolTip { background-color: #ffffff; color: #334155; border: 1px solid #94a3b8; padding: 4px; }
         """)
 
         central_widget = QWidget()
@@ -1739,6 +1931,7 @@ class MainWindow(QMainWindow):
         
         # Tab 1: Configuration
         tab_config = QWidget()
+        tab_config.setObjectName("ConfigTab")
         config_tab_layout = QVBoxLayout(tab_config)
         config_tab_layout.setSpacing(8)
         
@@ -1830,12 +2023,15 @@ class MainWindow(QMainWindow):
 
         # Tab 2: Custom Crops
         tab_crops = QWidget()
+        tab_crops.setObjectName("CropsTab")
         crops_tab_layout = QVBoxLayout(tab_crops)
         crops_tab_layout.setSpacing(6)
         
         crops_scroll = QScrollArea()
         crops_scroll.setWidgetResizable(True)
+        crops_scroll.viewport().setObjectName("CropsScrollViewport")
         crops_scroll_content = QWidget()
+        crops_scroll_content.setObjectName("CropsScrollContent")
         crops_scroll_layout = QVBoxLayout(crops_scroll_content)
         crops_scroll_layout.setSpacing(10)
         
@@ -1931,6 +2127,7 @@ class MainWindow(QMainWindow):
         
         self.preview_tabs = QTabWidget()
         self.hud_tab = QWidget()
+        self.hud_tab.setObjectName("PreviewTab")
         hud_layout = QHBoxLayout(self.hud_tab)
         self.lbl_crop = QLabel("รอรูป...")
         self.lbl_crop.setFixedSize(90, 45)
@@ -1950,6 +2147,7 @@ class MainWindow(QMainWindow):
         hud_layout.addLayout(data_layout)
         
         self.gold_tab = QWidget()
+        self.gold_tab.setObjectName("PreviewTab")
         gold_layout = QHBoxLayout(self.gold_tab)
         self.lbl_gold_ore = QLabel("รอรูปทอง...")
         self.lbl_gold_ore.setFixedSize(90, 45)
@@ -1968,6 +2166,7 @@ class MainWindow(QMainWindow):
         gold_data_layout.addWidget(self.lbl_gold_thresh_val)
         gold_layout.addLayout(gold_data_layout)
         self.diamond_tab = QWidget()
+        self.diamond_tab.setObjectName("PreviewTab")
         diamond_layout = QHBoxLayout(self.diamond_tab)
         self.lbl_diamond_slot = QLabel("รอรูปเพชร...")
         self.lbl_diamond_slot.setFixedSize(90, 45)
@@ -2523,6 +2722,8 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    apply_fixed_light_theme(app)
     window = MainWindow()
     window.show()
+    force_light_title_bar(window)
     sys.exit(app.exec())
