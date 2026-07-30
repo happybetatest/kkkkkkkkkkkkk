@@ -1879,6 +1879,9 @@ class MainWindow(QMainWindow):
             QTabBar::tab { background-color: #e2e8f0; color: #475569; border: 1px solid #cbd5e1; padding: 7px 12px; }
             QTabBar::tab:selected { background-color: #ffffff; color: #0f766e; border-bottom-color: #ffffff; }
             QTabBar::tab:hover:!selected { background-color: #f1f5f9; }
+            QWidget#ConfigTab, QWidget#CropsTab, QWidget#CropsScrollContent { background-color: #f8fafc; color: #334155; }
+            QWidget#PreviewTab { background-color: #ffffff; color: #334155; }
+            QWidget#CropsScrollViewport { background-color: #f8fafc; }
             QComboBox, QLineEdit { background-color: #ffffff; color: #334155; border: 1px solid #94a3b8; border-radius: 4px; padding: 4px 7px; selection-background-color: #0d9488; selection-color: #ffffff; }
             QComboBox:disabled, QLineEdit:disabled { background-color: #f1f5f9; color: #94a3b8; }
             QComboBox::drop-down { background-color: #f1f5f9; border-left: 1px solid #cbd5e1; width: 24px; }
@@ -1928,6 +1931,7 @@ class MainWindow(QMainWindow):
         
         # Tab 1: Configuration
         tab_config = QWidget()
+        tab_config.setObjectName("ConfigTab")
         config_tab_layout = QVBoxLayout(tab_config)
         config_tab_layout.setSpacing(8)
         
@@ -2019,12 +2023,15 @@ class MainWindow(QMainWindow):
 
         # Tab 2: Custom Crops
         tab_crops = QWidget()
+        tab_crops.setObjectName("CropsTab")
         crops_tab_layout = QVBoxLayout(tab_crops)
         crops_tab_layout.setSpacing(6)
         
         crops_scroll = QScrollArea()
         crops_scroll.setWidgetResizable(True)
+        crops_scroll.viewport().setObjectName("CropsScrollViewport")
         crops_scroll_content = QWidget()
+        crops_scroll_content.setObjectName("CropsScrollContent")
         crops_scroll_layout = QVBoxLayout(crops_scroll_content)
         crops_scroll_layout.setSpacing(10)
         
@@ -2120,6 +2127,7 @@ class MainWindow(QMainWindow):
         
         self.preview_tabs = QTabWidget()
         self.hud_tab = QWidget()
+        self.hud_tab.setObjectName("PreviewTab")
         hud_layout = QHBoxLayout(self.hud_tab)
         self.lbl_crop = QLabel("รอรูป...")
         self.lbl_crop.setFixedSize(90, 45)
@@ -2139,6 +2147,7 @@ class MainWindow(QMainWindow):
         hud_layout.addLayout(data_layout)
         
         self.gold_tab = QWidget()
+        self.gold_tab.setObjectName("PreviewTab")
         gold_layout = QHBoxLayout(self.gold_tab)
         self.lbl_gold_ore = QLabel("รอรูปทอง...")
         self.lbl_gold_ore.setFixedSize(90, 45)
@@ -2157,6 +2166,7 @@ class MainWindow(QMainWindow):
         gold_data_layout.addWidget(self.lbl_gold_thresh_val)
         gold_layout.addLayout(gold_data_layout)
         self.diamond_tab = QWidget()
+        self.diamond_tab.setObjectName("PreviewTab")
         diamond_layout = QHBoxLayout(self.diamond_tab)
         self.lbl_diamond_slot = QLabel("รอรูปเพชร...")
         self.lbl_diamond_slot.setFixedSize(90, 45)
