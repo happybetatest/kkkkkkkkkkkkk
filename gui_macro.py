@@ -1065,7 +1065,13 @@ class MacroWorker(QThread):
         return opened
 
     def ensure_inventory_closed(self, log_prefix="[ระบบ]"):
-        if not self.is_inventory_open():
+        initial_bg = self.capture_background(self.hwnd)
+        if initial_bg is None:
+            self.log_signal.emit(
+                f"{log_prefix} ยกเลิกการปิดกระเป๋า เพราะจับภาพยืนยันไม่ได้"
+            )
+            return False
+        if not self.is_inventory_open(initial_bg):
             self.log_signal.emit(f"{log_prefix} กระเป๋าปิดอยู่แล้ว")
             return True
         for attempt in range(1, 3):
@@ -1079,11 +1085,29 @@ class MacroWorker(QThread):
                     f"{log_prefix} กระเป๋ายังเปิดอยู่ "
                     "กำลังลองกด T ซ้ำครั้งสุดท้าย..."
                 )
-            send_key_direct("t")
-            time.sleep(2.0)
-            if not self.is_inventory_open():
-                time.sleep(0.35)
-                if not self.is_inventory_open():
+            # FiveM can swallow a short T press when focus changes or the UI is
+            # still animating. Re-focus before every attempt, hold the key a
+            # little longer, then verify two fresh frames.
+            if self.activate_game_window() is None:
+                self.log_signal.emit(
+                    f"{log_prefix} ยกเลิกการปิดกระเป๋า เพราะโฟกัส FiveM ไม่สำเร็จ"
+                )
+                return False
+            time.sleep(0.4)
+            send_key_direct("t", duration=0.25)
+            time.sleep(3.0)
+            first_check = self.capture_background(self.hwnd)
+            closed_once = (
+                first_check is not None
+                and not self.is_inventory_open(first_check)
+            )
+            if closed_once:
+                time.sleep(0.6)
+                second_check = self.capture_background(self.hwnd)
+                if (
+                    second_check is not None
+                    and not self.is_inventory_open(second_check)
+                ):
                     self.log_signal.emit(
                         f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ"
                     )
@@ -1093,6 +1117,18 @@ class MacroWorker(QThread):
         self.log_signal.emit(
             f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 2 ครั้ง"
         )
+        try:
+            debug_bg = self.capture_background(self.hwnd)
+            if debug_bg is not None:
+                cv2.imwrite(
+                    get_writable_path("debug_inventory_close_failed.png"),
+                    debug_bg,
+                )
+                self.log_signal.emit(
+                    f"{log_prefix} บันทึกภาพ Debug: debug_inventory_close_failed.png"
+                )
+        except Exception:
+            pass
         return False
 
     def process_hud_preview(self, bg_img):
