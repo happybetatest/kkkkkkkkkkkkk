@@ -1011,21 +1011,51 @@ class MacroWorker(QThread):
             return None
 
     def is_inventory_open(self, bg_img=None):
-        """Detect an open inventory from known item artwork in its region."""
+        """Detect the inventory panel before trusting item-template matches."""
         if bg_img is None:
             bg_img = self.capture_background(self.hwnd)
         if bg_img is None:
             return False
         h_img, w_img = bg_img.shape[:2]
         scaled_bag = self.get_scaled_region(self.bag_region)
-        x_range = (
-            scaled_bag[0] / w_img,
-            (scaled_bag[0] + scaled_bag[2]) / w_img
-        ) if scaled_bag else (0.25, 0.90)
-        y_range = (
-            scaled_bag[1] / h_img,
-            (scaled_bag[1] + scaled_bag[3]) / h_img
-        ) if scaled_bag else (0.10, 0.95)
+        if scaled_bag:
+            bag_x, bag_y, bag_w, bag_h = scaled_bag
+            x_start = max(0, min(int(bag_x), w_img))
+            x_end = max(0, min(int(bag_x + bag_w), w_img))
+            y_start = max(0, min(int(bag_y), h_img))
+            y_end = max(0, min(int(bag_y + bag_h), h_img))
+        else:
+            x_start, x_end = int(w_img * 0.25), int(w_img * 0.90)
+            y_start, y_end = int(h_img * 0.10), int(h_img * 0.95)
+        if x_end - x_start < 20 or y_end - y_start < 20:
+            return False
+
+        # Gold/diamond artwork is also shown in the job-status cards while the
+        # inventory is closed.  A template match alone therefore produced a
+        # false "inventory open" result and the second T press reopened it.
+        # The actual inventory has a large, continuous dark panel behind its
+        # item slots, so require that panel before checking any item artwork.
+        bag_crop = bg_img[y_start:y_end, x_start:x_end]
+        bag_gray = cv2.cvtColor(bag_crop, cv2.COLOR_BGR2GRAY)
+        dark_mask = cv2.inRange(bag_gray, 0, 88)
+        dark_ratio = cv2.countNonZero(dark_mask) / float(dark_mask.size)
+        connected_mask = cv2.morphologyEx(
+            dark_mask,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)),
+        )
+        contours, _ = cv2.findContours(
+            connected_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        largest_dark_ratio = (
+            max((cv2.contourArea(contour) for contour in contours), default=0.0)
+            / float(dark_mask.size)
+        )
+        if dark_ratio < 0.25 or largest_dark_ratio < 0.12:
+            return False
+
+        x_range = (x_start / w_img, x_end / w_img)
+        y_range = (y_start / h_img, y_end / h_img)
         for template_path, threshold in (
             ("templates/gold_ore.png", 0.65),
             ("templates/diamond_icon.png", 0.78),
