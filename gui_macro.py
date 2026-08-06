@@ -1017,15 +1017,6 @@ class MacroWorker(QThread):
                             pass
             time.sleep(0.3)
             if win32gui.GetForegroundWindow() != self.hwnd:
-                cx = geometry[0] + geometry[2] // 2
-                cy = geometry[1] + geometry[3] // 2
-                win32api.SetCursorPos((cx, cy))
-                time.sleep(0.1)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.05)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(0.25)
-            if win32gui.GetForegroundWindow() != self.hwnd:
                 detail = f": {focus_error}" if focus_error else ""
                 self.log_signal.emit(
                     "[ระบบ] ไม่สามารถโฟกัส FiveM ได้"
@@ -1050,11 +1041,10 @@ class MacroWorker(QThread):
         SendInput is global.  Guarding every call here prevents a delayed key
         from reaching the desktop, pause menu, or Rockstar Editor.
         """
-        if require_focus and (
-            not self.hwnd
-            or not win32gui.IsWindow(self.hwnd)
-            or win32gui.GetForegroundWindow() != self.hwnd
-        ):
+        # Re-assert foreground ownership before every key, even when Windows
+        # currently reports FiveM in front.  Focus can change between capture
+        # and SendInput.  activate_game_window no longer clicks the game.
+        if require_focus:
             if self.activate_game_window() is None:
                 return False
         if win32gui.GetForegroundWindow() != self.hwnd:
