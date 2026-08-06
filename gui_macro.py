@@ -300,6 +300,7 @@ class MacroWorker(QThread):
         self.character_idle_since = 0.0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
+        self.last_rockstar_escape_time = 0.0
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -1114,6 +1115,54 @@ class MacroWorker(QThread):
         self.last_activity_frame = None
         return True
 
+    def is_rockstar_confirmation(self, bg_img):
+        """Detect the bottom-right No/Esc/Yes/Enter Rockstar prompt.
+
+        The prompt contains two large bright key-cap icons on an otherwise
+        almost black strip.  This avoids depending on language-specific text.
+        """
+        try:
+            h_img, w_img = bg_img.shape[:2]
+            roi = bg_img[int(h_img * 0.90):h_img, int(w_img * 0.86):w_img]
+            if roi.size == 0:
+                return False
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            dark_ratio = float(np.mean(gray < 20))
+            bright = (gray > 205).astype(np.uint8) * 255
+            count, _, stats, _ = cv2.connectedComponentsWithStats(bright, 8)
+            large_caps = 0
+            for index in range(1, count):
+                _, _, width, height, area = map(int, stats[index])
+                if area >= 180 and width >= 14 and height >= 14:
+                    large_caps += 1
+            return dark_ratio >= 0.72 and large_caps >= 2
+        except Exception:
+            return False
+
+    def recover_from_rockstar_confirmation(self, bg_img):
+        if not self.is_rockstar_confirmation(bg_img):
+            return False
+        now = time.time()
+        if now - self.last_rockstar_escape_time < 1.5:
+            return True
+        self.last_rockstar_escape_time = now
+        self.log_signal.emit(
+            "[ระบบป้องกัน Rockstar] พบหน้าต่างยืนยัน กำลังกด Esc เพื่อเลือก No"
+        )
+        if not self.send_game_key("esc"):
+            return True
+        time.sleep(0.8)
+        # When inventory is layered above the Rockstar prompt, the first Esc
+        # closes only the inventory.  Confirm on a fresh frame and send one
+        # more Esc solely while the Rockstar prompt is still visible.
+        fresh = self.capture_background(self.hwnd)
+        if fresh is not None and self.is_rockstar_confirmation(fresh):
+            self.send_game_key("esc")
+            time.sleep(0.8)
+        if self.idle_inventory_recovery:
+            self.ensure_inventory_open("[ระบบทอง]")
+        return True
+
     def resume_farming_after_inventory(self):
         """Close the bag, enter the job interaction and click Auto Farm."""
         if not self.ensure_inventory_closed("[ระบบทอง]"):
@@ -1823,6 +1872,9 @@ class MacroWorker(QThread):
                 if not self.is_running:
                     time.sleep(0.5)
                     continue
+                if self.recover_from_rockstar_confirmation(bg_img):
+                    time.sleep(0.5)
+                    continue
                 match_status = {}
                 h_img, w_img, _ = bg_img.shape
 
@@ -1976,9 +2028,12 @@ class MacroWorker(QThread):
                     estimated_count = self.observe_gold_count_change(
                         bg_img, ore_x, ore_y
                     )
+                    # A confirmed idle/full recovery must not wait for the
+                    # normal 30-second random-disposal cooldown.  Previously
+                    # its 8-second inspection window expired first.
                     can_dispose_now = (
-                        time.time()
-                        >= self.gold_disposal_cooldown_until
+                        self.idle_inventory_recovery
+                        or time.time() >= self.gold_disposal_cooldown_until
                     )
                     random_target_reached = (
                         estimated_count is not None
@@ -1992,6 +2047,43 @@ class MacroWorker(QThread):
                         if can_dispose_now
                         else None
                     )
+                    # At 40/40 the saved 30/40 template can miss its strict
+                    # leading-digit sub-check by a fraction.  During idle
+                    # recovery, accept a strong count-template match only when
+                    # it is physically beside the already-confirmed gold icon.
+                    if (
+                        can_dispose_now
+                        and self.idle_inventory_recovery
+                        and (
+                            not count_result
+                            or count_result[0] is None
+                        )
+                    ):
+                        full_text = self.find_image(
+                            bg_img,
+                            gold_text_path,
+                            0.78,
+                            x_range=gold_x,
+                            y_range=gold_y,
+                        )
+                        if full_text and full_text[0] is not None:
+                            text_x, text_y, text_score = full_text
+                            max_distance = 95.0 * max(
+                                w_img / 1600.0, h_img / 900.0
+                            )
+                            distance = float(np.hypot(
+                                text_x - ore_x, text_y - ore_y
+                            ))
+                            if distance <= max_distance:
+                                count_result = (
+                                    text_x,
+                                    text_y,
+                                    text_score,
+                                    np.zeros((10, 10, 3), dtype=np.uint8),
+                                )
+                                self.log_signal.emit(
+                                    "[ระบบทอง] ยืนยันทองเต็ม 40/40 จากภาพสำรอง กำลังทิ้งทอง"
+                                )
                     if can_dispose_now and (
                         count_result or random_target_reached
                     ):
