@@ -1172,6 +1172,7 @@ class MacroWorker(QThread):
         The prompt contains two large bright key-cap icons on an otherwise
         almost black strip.  This avoids depending on language-specific text.
         """
+        return False
         try:
             h_img, w_img = bg_img.shape[:2]
             roi = bg_img[int(h_img * 0.90):h_img, int(w_img * 0.86):w_img]
