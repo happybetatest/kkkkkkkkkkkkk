@@ -266,7 +266,7 @@ class MacroWorker(QThread):
         self.diamond_full_notified = False
         self.diamond_cycle_started_at = time.time()
         self.diamond_mode = "car_timer"
-        self.diamond_interval_minutes = 20
+        self.diamond_interval_minutes = 40
         self.discord_webhook_url = ""
         self.auto_feed_enabled = True
         self.auto_store_enabled = True
@@ -2308,7 +2308,7 @@ class MainWindow(QMainWindow):
         self.auto_store_cb.setChecked(self.auto_store_enabled)
         self.auto_store_cb.toggled.connect(self.on_auto_store_toggled)
         self.diamond_mode_combo = QComboBox()
-        self.diamond_mode_combo.addItem("มีรถ: เก็บเพชรทุก 20 นาที", "car_timer")
+        self.diamond_mode_combo.addItem("มีรถ: เก็บเพชรทุก 40 นาที", "car_timer")
         self.diamond_mode_combo.addItem("ไม่มีรถ: เต็ม 40/40 แล้วหยุด + แจ้ง Discord", "no_car_full")
         mode_index = self.diamond_mode_combo.findData(self.diamond_mode)
         self.diamond_mode_combo.setCurrentIndex(max(0, mode_index))
@@ -2693,7 +2693,7 @@ class MainWindow(QMainWindow):
         self.hunger_limit, self.thirst_limit = 20, 20
         self.auto_feed_enabled, self.auto_store_enabled = True, True
         self.diamond_mode = "car_timer"
-        self.diamond_interval_minutes = 20
+        self.diamond_interval_minutes = 40
         self.discord_webhook_url = ""
         self.reference_resolution = None
         self.template_reference_sizes = {}
@@ -2722,7 +2722,9 @@ class MainWindow(QMainWindow):
                     self.auto_feed_enabled = data.get("auto_feed_enabled", True)
                     self.auto_store_enabled = data.get("auto_store_enabled", True)
                     self.diamond_mode = data.get("diamond_mode", "car_timer")
-                    self.diamond_interval_minutes = int(data.get("diamond_interval_minutes", 20))
+                    # Car storage now uses a fixed 40-minute interval. Ignore
+                    # the legacy saved value so existing installations migrate.
+                    self.diamond_interval_minutes = 40
                     self.reference_resolution = data.get("reference_resolution", None)
                     self.template_reference_sizes = data.get("template_reference_sizes", {})
             except Exception: pass
@@ -2764,12 +2766,7 @@ class MainWindow(QMainWindow):
                 self.diamond_mode = str(
                     private_data.get("diamond_mode", self.diamond_mode)
                 )
-                self.diamond_interval_minutes = int(
-                    private_data.get(
-                        "diamond_interval_minutes",
-                        self.diamond_interval_minutes
-                    )
-                )
+                self.diamond_interval_minutes = 40
         except Exception:
             self.discord_webhook_url = ""
 
