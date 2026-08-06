@@ -301,6 +301,7 @@ class MacroWorker(QThread):
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
         self.last_rockstar_escape_time = 0.0
+        self.discord_bug_alert_times = {}
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -384,6 +385,11 @@ class MacroWorker(QThread):
         self.connection_signal.emit(
             False, "Watchdog กำลังเชื่อมต่อ FiveM ใหม่..."
         )
+        self.send_bug_webhook(
+            "Watchdog รีระบบ",
+            reason,
+            alert_key="watchdog",
+        )
         return True
 
     def record_focus_failure(self, reason):
@@ -419,6 +425,61 @@ class MacroWorker(QThread):
             self.log_signal.emit("[Discord] แจ้งเตือนเพชรเต็ม 40/40 สำเร็จ")
         except Exception as error:
             self.log_signal.emit(f"[Discord] ส่งแจ้งเตือนไม่สำเร็จ: {type(error).__name__}: {error}")
+
+    def send_bug_webhook(
+        self, title, detail, alert_key=None, cooldown_seconds=300.0
+    ):
+        """Send a rate-limited bug alert through the configured webhook."""
+        if not self.discord_webhook_url:
+            return False
+        now = time.time()
+        key = str(alert_key or title)
+        last_sent = self.discord_bug_alert_times.get(key, 0.0)
+        if now - last_sent < cooldown_seconds:
+            return False
+        # Reserve the cooldown before the request so repeated failures cannot
+        # stall the worker or flood its log on every loop iteration.
+        self.discord_bug_alert_times[key] = now
+        machine_name = os.environ.get("COMPUTERNAME", "Unknown PC")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        safe_detail = str(detail or "ไม่ทราบรายละเอียด")[:1200]
+        payload = json.dumps(
+            {
+                "username": "FiveM Farming Bug Alert",
+                "content": (
+                    f"⚠️ **ตรวจพบบัค: {title}**\n"
+                    f"รายละเอียด: {safe_detail}\n"
+                    f"เครื่อง: {machine_name}\n"
+                    f"เวลา: {timestamp}"
+                ),
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.discord_webhook_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "FiveM-Farming/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=10, context=HTTPS_CONTEXT
+            ) as response:
+                if response.status not in (200, 204):
+                    raise RuntimeError(f"Discord HTTP {response.status}")
+            self.log_signal.emit(
+                f"[Discord] ส่งแจ้งเตือนบัคสำเร็จ: {title}"
+            )
+            return True
+        except Exception as error:
+            self.log_signal.emit(
+                f"[Discord] ส่งแจ้งเตือนบัคไม่สำเร็จ: "
+                f"{type(error).__name__}: {error}"
+            )
+            return False
 
     def get_client_geometry(self, hwnd=None):
         """Return the game client origin on screen and its pixel size."""
@@ -1139,6 +1200,12 @@ class MacroWorker(QThread):
         self.log_signal.emit(
             "[ระบบป้องกัน Rockstar] พบหน้าต่างยืนยัน กำลังกด Esc เพื่อเลือก No"
         )
+        self.send_bug_webhook(
+            "เข้า Rockstar Editor",
+            "ตรวจพบหน้าต่าง No / Esc / Yes / Enter และกำลังออกอัตโนมัติ",
+            alert_key="rockstar_editor",
+            cooldown_seconds=120.0,
+        )
         if not self.send_game_key("esc"):
             return True
         time.sleep(0.8)
@@ -1310,6 +1377,11 @@ class MacroWorker(QThread):
                 time.sleep(0.5)
         self.log_signal.emit(
             f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 2 ครั้ง"
+        )
+        self.send_bug_webhook(
+            "ปิดกระเป๋าไม่สำเร็จ",
+            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 2 ครั้ง",
+            alert_key="inventory_close_failed",
         )
         try:
             debug_bg = self.capture_background(self.hwnd)
@@ -1875,6 +1947,11 @@ class MacroWorker(QThread):
                     self.log_signal.emit(
                         "[ระบบทอง] ขั้นตอนทิ้งทองหมดเวลา ยกเลิกรอบนี้"
                     )
+                    self.send_bug_webhook(
+                        "ทิ้งทองหมดเวลา",
+                        f"ค้างอยู่ที่ขั้นตอน {self.gold_disposal_stage}",
+                        alert_key="gold_disposal_timeout",
+                    )
                     self.gold_disposal_stage = None
 
                 if self.gold_disposal_stage == "await_destroy":
@@ -2133,6 +2210,11 @@ class MacroWorker(QThread):
                 self.last_runtime_error_occurrence_time = now
                 if message != self.last_runtime_error or now - self.last_runtime_error_time > 10.0:
                     self.log_signal.emit(f"[ข้อผิดพลาดในลูป] {message}")
+                    self.send_bug_webhook(
+                        "ข้อผิดพลาดในลูป",
+                        message,
+                        alert_key=f"runtime:{type(error).__name__}",
+                    )
                     self.last_runtime_error = message
                     self.last_runtime_error_time = now
                 if self.runtime_error_streak >= 5:
@@ -2315,7 +2397,7 @@ class MainWindow(QMainWindow):
         self.diamond_mode_combo.currentIndexChanged.connect(self.on_diamond_mode_changed)
         self.webhook_input = QLineEdit()
         self.webhook_input.setEchoMode(QLineEdit.Password)
-        self.webhook_input.setPlaceholderText("Discord Webhook (เก็บเฉพาะเครื่องนี้)")
+        self.webhook_input.setPlaceholderText("Discord Webhook (แจ้งเพชรเต็มและแจ้งบัค)")
         self.webhook_input.setText(self.discord_webhook_url)
         self.webhook_input.editingFinished.connect(self.on_webhook_edited)
         toggle_layout.addWidget(self.auto_feed_cb)
