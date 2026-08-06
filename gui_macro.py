@@ -292,6 +292,14 @@ class MacroWorker(QThread):
         self.last_watchdog_reset_time = 0.0
         self.watchdog_reconnecting = False
         self.watchdog_resume_at = 0.0
+        # Recovery for a farm job that silently stops when the character's
+        # inventory is full.  We compare low-resolution gameplay frames and
+        # only inspect the bag after the scene has stayed still for a while.
+        self.last_activity_frame = None
+        self.last_activity_sample_time = 0.0
+        self.character_idle_since = 0.0
+        self.idle_inventory_recovery = False
+        self.idle_inventory_check_until = 0.0
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -358,6 +366,10 @@ class MacroWorker(QThread):
         self.gold_disposal_stage = None
         self.gold_disposal_started_at = 0.0
         self.gold_disposal_cooldown_until = self.watchdog_resume_at
+        self.last_activity_frame = None
+        self.character_idle_since = 0.0
+        self.idle_inventory_recovery = False
+        self.idle_inventory_check_until = 0.0
 
         resume_text = (
             "บอทจะทำงานต่ออัตโนมัติ"
@@ -974,13 +986,34 @@ class MacroWorker(QThread):
                 win32gui.SetForegroundWindow(self.hwnd)
             except Exception as error:
                 focus_error = error
+                attached = False
                 try:
-                    keyboard.send("alt")
-                    time.sleep(0.1)
+                    # Do not use the old global Alt keystroke workaround here.
+                    # If it arrived late while a GTA menu was open it could
+                    # contribute to unintended Rockstar Editor navigation.
+                    foreground = win32gui.GetForegroundWindow()
+                    foreground_thread = win32api.GetWindowThreadProcessId(
+                        foreground
+                    )[0] if foreground else 0
+                    current_thread = win32api.GetCurrentThreadId()
+                    if foreground_thread and foreground_thread != current_thread:
+                        attached = bool(
+                            ctypes.windll.user32.AttachThreadInput(
+                                current_thread, foreground_thread, True
+                            )
+                        )
                     win32gui.BringWindowToTop(self.hwnd)
                     win32gui.SetForegroundWindow(self.hwnd)
                 except Exception as retry_error:
                     focus_error = retry_error
+                finally:
+                    if attached:
+                        try:
+                            ctypes.windll.user32.AttachThreadInput(
+                                current_thread, foreground_thread, False
+                            )
+                        except Exception:
+                            pass
             time.sleep(0.3)
             if win32gui.GetForegroundWindow() != self.hwnd:
                 cx = geometry[0] + geometry[2] // 2
@@ -1009,6 +1042,96 @@ class MacroWorker(QThread):
             self.log_signal.emit(f"[ระบบ] โฟกัส FiveM ไม่สำเร็จ: {error}")
             self.record_focus_failure("โฟกัส FiveM เกิดข้อผิดพลาด 3 ครั้งติด")
             return None
+
+    def send_game_key(self, key_name, duration=0.10, require_focus=True):
+        """Send a hardware key only while FiveM is the foreground window.
+
+        SendInput is global.  Guarding every call here prevents a delayed key
+        from reaching the desktop, pause menu, or Rockstar Editor.
+        """
+        if require_focus and (
+            not self.hwnd
+            or not win32gui.IsWindow(self.hwnd)
+            or win32gui.GetForegroundWindow() != self.hwnd
+        ):
+            if self.activate_game_window() is None:
+                return False
+        if win32gui.GetForegroundWindow() != self.hwnd:
+            return False
+        send_key_direct(key_name, duration=duration)
+        return win32gui.GetForegroundWindow() == self.hwnd
+
+    def hold_game_key(self, key_name, duration):
+        """Hold a key with focus checks and always release it."""
+        if self.activate_game_window() is None:
+            return False
+        press_key_hold(key_name)
+        try:
+            end_at = time.time() + duration
+            while time.time() < end_at:
+                if win32gui.GetForegroundWindow() != self.hwnd:
+                    return False
+                time.sleep(min(0.1, end_at - time.time()))
+            return True
+        finally:
+            release_key_hold(key_name)
+
+    def update_character_idle_state(self, bg_img):
+        """Open the inventory after a genuinely static gameplay interval."""
+        if self.is_inventory_open(bg_img) or self.gold_disposal_stage:
+            self.last_activity_frame = None
+            self.character_idle_since = 0.0
+            return False
+        now = time.time()
+        if now - self.last_activity_sample_time < 2.0:
+            return False
+        self.last_activity_sample_time = now
+        h_img, w_img = bg_img.shape[:2]
+        # Ignore screen edges/HUD and use a tiny grayscale sample so harmless
+        # capture noise does not look like character movement.
+        crop = bg_img[int(h_img * .18):int(h_img * .82), int(w_img * .20):int(w_img * .80)]
+        frame = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (96, 54))
+        if self.last_activity_frame is None:
+            self.last_activity_frame = frame
+            self.character_idle_since = now
+            return False
+        change = float(np.mean(cv2.absdiff(frame, self.last_activity_frame)))
+        self.last_activity_frame = frame
+        if change > 1.15:
+            self.character_idle_since = now
+            return False
+        if now - self.character_idle_since < 20.0:
+            return False
+        self.log_signal.emit(
+            "[ระบบทอง] ตรวจพบตัวละครยืนนิ่ง 20 วินาที กำลังเปิดกระเป๋าเช็คทองเต็ม"
+        )
+        if not self.ensure_inventory_open("[ระบบทอง]"):
+            self.character_idle_since = now
+            return False
+        self.idle_inventory_recovery = True
+        self.idle_inventory_check_until = time.time() + 8.0
+        self.character_idle_since = 0.0
+        self.last_activity_frame = None
+        return True
+
+    def resume_farming_after_inventory(self):
+        """Close the bag, enter the job interaction and click Auto Farm."""
+        if not self.ensure_inventory_closed("[ระบบทอง]"):
+            return False
+        self.log_signal.emit("[ระบบทอง] กำลังเริ่มระบบฟาร์มใหม่...")
+        if not self.hold_game_key("e", 1.5):
+            return False
+        time.sleep(1.5)
+        bg_img = self.capture_background(self.hwnd)
+        if bg_img is None:
+            return False
+        result = self.find_image(bg_img, "templates/auto_farm.png", 0.70)
+        if not result or result[0] is None:
+            self.log_signal.emit("[ระบบทอง] ไม่พบปุ่ม Auto Farm หลังปิดกระเป๋า")
+            return False
+        self.bg_click(self.hwnd, result[0], result[1])
+        self.log_signal.emit("[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ")
+        return True
 
     def is_inventory_open(self, bg_img=None):
         """Detect the inventory panel before trusting item-template matches."""
@@ -1081,7 +1204,8 @@ class MacroWorker(QThread):
         self.log_signal.emit(
             f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังกด T..."
         )
-        send_key_direct("t")
+        if not self.send_game_key("t"):
+            return False
         time.sleep(1.2)
         opened = self.is_inventory_open()
         if opened:
@@ -1124,7 +1248,8 @@ class MacroWorker(QThread):
                 )
                 return False
             time.sleep(0.4)
-            send_key_direct("t", duration=0.25)
+            if not self.send_game_key("t", duration=0.25):
+                return False
             time.sleep(3.0)
             first_check = self.capture_background(self.hwnd)
             closed_once = (
@@ -1190,22 +1315,25 @@ class MacroWorker(QThread):
         if orig_pos is None:
             self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
             return False
-        send_key_direct("esc")
+        if not self.send_game_key("esc"):
+            return False
         time.sleep(1.0)
-        send_key_direct("x")
+        if not self.send_game_key("x"):
+            return False
         time.sleep(1.0)
         if need_water:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
-            send_key_direct("6")
+            if not self.send_game_key("6"):
+                return False
             time.sleep(8.0)
         if need_food:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
-            send_key_direct("7")
+            if not self.send_game_key("7"):
+                return False
             time.sleep(8.0)
         self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
-        press_key_hold("e")
-        time.sleep(1.5)
-        release_key_hold("e")
+        if not self.hold_game_key("e", 1.5):
+            return False
         time.sleep(1.5)
         bg_after = self.capture_background(self.hwnd)
         if bg_after is not None:
@@ -1228,7 +1356,8 @@ class MacroWorker(QThread):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 time.sleep(2.0)
         self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-        send_key_direct("t")
+        if not self.send_game_key("t"):
+            return False
         time.sleep(1.0)
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
@@ -1370,9 +1499,11 @@ class MacroWorker(QThread):
                 "เพราะตรวจว่ายังปิดกระเป๋าไม่ได้"
             )
             return False
-        send_key_direct("x")
+        if not self.send_game_key("x"):
+            return False
         time.sleep(1.0)
-        send_key_direct("h")
+        if not self.send_game_key("h"):
+            return False
         time.sleep(1.5)
         trunk_opened = False
         stored_successfully = False
@@ -1444,11 +1575,11 @@ class MacroWorker(QThread):
                 "จึงยังไม่ได้เก็บเข้ารถ"
             )
         if trunk_opened:
-            send_key_direct("esc")
+            if not self.send_game_key("esc"):
+                return False
             time.sleep(1.0)
-        press_key_hold("e")
-        time.sleep(1.5)
-        release_key_hold("e")
+        if not self.hold_game_key("e", 1.5):
+            return False
         time.sleep(1.5)
         bg_final = self.capture_background(self.hwnd)
         if bg_final is not None:
@@ -1783,7 +1914,16 @@ class MacroWorker(QThread):
                         self.match_signal.emit(match_status)
                         self.bg_click(self.hwnd, x_conf, y_conf)
                         time.sleep(self.delays["confirm"])
+                        was_idle_recovery = self.idle_inventory_recovery
                         self.choose_next_gold_target()
+                        if was_idle_recovery:
+                            self.log_signal.emit(
+                                "[ระบบทอง] ทิ้งทองเสร็จแล้ว รอ 10 วินาทีก่อนออกจากกระเป๋า"
+                            )
+                            time.sleep(10.0)
+                            self.idle_inventory_recovery = False
+                            self.idle_inventory_check_until = 0.0
+                            self.resume_farming_after_inventory()
                     else:
                         time.sleep(0.3)
                     continue
@@ -1791,6 +1931,22 @@ class MacroWorker(QThread):
                 match_status["all"] = (False, 0.0)
                 match_status["confirm"] = (False, 0.0)
                 match_status["destroy"] = (False, 0.0)
+
+                if self.update_character_idle_state(bg_img):
+                    time.sleep(0.5)
+                    continue
+
+                if (
+                    self.idle_inventory_recovery
+                    and time.time() > self.idle_inventory_check_until
+                ):
+                    self.log_signal.emit(
+                        "[ระบบทอง] ตรวจแล้วไม่พบทองเต็ม กำลังปิดกระเป๋าและกลับไปฟาร์ม"
+                    )
+                    self.idle_inventory_recovery = False
+                    self.idle_inventory_check_until = 0.0
+                    self.resume_farming_after_inventory()
+                    continue
 
                 gold_ore_path, gold_text_path = "templates/gold_ore.png", "templates/gold_text.png"
                 preview_ore_img, preview_text_img = np.zeros((10, 10, 3), dtype=np.uint8), np.zeros((10, 10, 3), dtype=np.uint8)
@@ -2384,6 +2540,11 @@ class MainWindow(QMainWindow):
         self.last_toggle_time = now
         self.worker.is_running = not self.worker.is_running
         if self.worker.is_running:
+            self.worker.last_activity_frame = None
+            self.worker.character_idle_since = 0.0
+            self.worker.last_activity_sample_time = 0.0
+            self.worker.idle_inventory_recovery = False
+            self.worker.idle_inventory_check_until = 0.0
             self.worker.reset_diamond_cycle()
             self.start_btn.setText("หยุดทำงานบอทชั่วคราว [F9]")
             self.start_btn.setProperty("running", "true")
