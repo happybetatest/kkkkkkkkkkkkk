@@ -9,7 +9,7 @@ import tempfile
 import urllib.request
 import zipfile
 import certifi
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QTimer
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QProgressBar, QVBoxLayout, QWidget
 
 
@@ -171,6 +171,43 @@ class LauncherWindow(QMainWindow):
         layout.addWidget(self.detail_label)
         self.setCentralWidget(central)
 
+        self.worker = None
+        QTimer.singleShot(0, self.choose_version)
+
+    def choose_version(self):
+        app_path = os.path.join(APP_DIR, APP_EXE)
+        installed_version = UpdateWorker().get_installed_version() or "ไม่ทราบ"
+        box = QMessageBox(self)
+        box.setWindowTitle("เลือกเวอร์ชัน FiveM Farming")
+        box.setIcon(QMessageBox.Question)
+        box.setText("ต้องการเปิดเวอร์ชันใด?")
+        box.setInformativeText(
+            f"เวอร์ชันที่ติดตั้งอยู่: {installed_version}\n\n"
+            "ทุกเวอร์ชันสามารถใช้งานได้ โดยไม่บังคับอัปเดต"
+        )
+        latest_button = box.addButton("ใช้ VER ใหม่", QMessageBox.AcceptRole)
+        old_button = box.addButton("ใช้ VER เก่า", QMessageBox.ActionRole)
+        cancel_button = box.addButton("ยกเลิก", QMessageBox.RejectRole)
+        if not os.path.isfile(app_path):
+            old_button.setEnabled(False)
+            old_button.setToolTip("ยังไม่มีเวอร์ชันเก่าติดตั้งในเครื่อง")
+        box.setDefaultButton(latest_button)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked == latest_button:
+            self.start_update()
+        elif clicked == old_button:
+            self.set_status(
+                f"กำลังเปิดเวอร์ชัน {installed_version}",
+                "เลือกใช้งานเวอร์ชันเดิมโดยไม่อัปเดต",
+                100,
+            )
+            self.launch_app(app_path)
+        elif clicked == cancel_button:
+            self.close()
+
+    def start_update(self):
         self.worker = UpdateWorker()
         self.worker.status.connect(self.set_status)
         self.worker.failed.connect(self.show_failure)
@@ -183,13 +220,27 @@ class LauncherWindow(QMainWindow):
         self.progress.setValue(progress)
 
     def show_failure(self, error):
-        QMessageBox.critical(
-            self,
-            "อัปเดตไม่สำเร็จ",
-            "ไม่สามารถตรวจสอบหรือติดตั้งเวอร์ชันล่าสุดได้\n"
-            "ระบบบังคับอัปเดตจึงไม่เปิดมาโครเวอร์ชันเก่า\n\n"
-            f"รายละเอียด: {error}",
-        )
+        app_path = os.path.join(APP_DIR, APP_EXE)
+        if os.path.isfile(app_path):
+            answer = QMessageBox.question(
+                self,
+                "อัปเดตไม่สำเร็จ",
+                "ไม่สามารถติดตั้งเวอร์ชันล่าสุดได้\n\n"
+                f"รายละเอียด: {error}\n\n"
+                "ต้องการเปิดเวอร์ชันเดิมที่ติดตั้งอยู่หรือไม่?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self.launch_app(app_path)
+                return
+        else:
+            QMessageBox.critical(
+                self,
+                "อัปเดตไม่สำเร็จ",
+                "ไม่สามารถติดตั้งเวอร์ชันล่าสุด และยังไม่มีเวอร์ชันเดิมในเครื่อง\n\n"
+                f"รายละเอียด: {error}",
+            )
         self.close()
 
     def launch_app(self, app_path):
