@@ -985,7 +985,7 @@ class MacroWorker(QThread):
 
     def choose_next_gold_target(self):
         choices = [
-            value for value in range(15, 31)
+            value for value in range(20, 31)
             if self.previous_gold_discard_target is None
             or abs(value - self.previous_gold_discard_target) > 3
         ]
@@ -1086,6 +1086,85 @@ class MacroWorker(QThread):
             return self.gold_estimated_count
         except Exception:
             return self.gold_estimated_count
+
+    def is_gold_exactly_full(self, bg_img, ore_x, ore_y):
+        """Confirm 40/40 by comparing the live numerator to denominator.
+
+        This uses glyphs from the same live frame, so it is independent of
+        anti-aliasing and UI scale.  It rejects 30/40 and other non-full counts
+        instead of broadly matching the saved gold_text crop.
+        """
+        try:
+            h_img, w_img = bg_img.shape[:2]
+            ore_path = self.resolve_template_path("templates/gold_ore.png")
+            sx, sy = self.get_template_scale(ore_path, w_img, h_img)
+            x0 = max(0, ore_x)
+            x1 = min(w_img, ore_x + max(24, int(round(45 * sx))))
+            y0 = max(0, ore_y - max(20, int(round(55 * sy))))
+            y1 = min(h_img, ore_y - max(5, int(round(15 * sy))))
+            strip = bg_img[y0:y1, x0:x1]
+            if strip.size == 0:
+                return False, 0.0, strip
+            gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
+            count, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+            glyphs = []
+            min_h = max(3, int(round(4 * sy)))
+            max_h = max(min_h + 1, int(round(12 * sy)))
+            for index in range(1, count):
+                gx, gy, gw, gh, area = map(int, stats[index])
+                if area >= 5 and min_h <= gh <= max_h and gw >= 2:
+                    glyphs.append((gx, gy, gw, gh, area))
+            glyphs.sort(key=lambda item: item[0])
+            best_score = 0.0
+            for anchor in glyphs:
+                row = [
+                    item for item in glyphs
+                    if abs(item[1] - anchor[1])
+                    <= max(2, int(round(2 * sy)))
+                ]
+                if len(row) < 4:
+                    continue
+                # The slash is the smallest interior glyph. Numerator glyphs
+                # are left of it and the fixed denominator 40 is right of it.
+                interior = list(enumerate(row[1:-1], start=1))
+                slash_index, _ = min(
+                    interior, key=lambda pair: (pair[1][4], pair[1][2])
+                )
+                numerator = row[:slash_index]
+                denominator = row[slash_index + 1:]
+                if not numerator or not denominator:
+                    continue
+
+                def crop_parts(parts):
+                    px0 = min(item[0] for item in parts)
+                    py0 = min(item[1] for item in parts)
+                    px1 = max(item[0] + item[2] for item in parts)
+                    py1 = max(item[1] + item[3] for item in parts)
+                    return binary[py0:py1, px0:px1]
+
+                numerator_img = cv2.resize(
+                    crop_parts(numerator), (30, 14),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                denominator_img = cv2.resize(
+                    crop_parts(denominator), (30, 14),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                correlation = float(cv2.matchTemplate(
+                    numerator_img, denominator_img,
+                    cv2.TM_CCOEFF_NORMED,
+                )[0, 0])
+                difference = float(
+                    np.mean(cv2.absdiff(numerator_img, denominator_img)) / 255.0
+                )
+                score = max(0.0, correlation) * max(0.0, 1.0 - difference)
+                best_score = max(best_score, score)
+                if correlation >= 0.50 and difference <= 0.28:
+                    return True, score, strip
+            return False, best_score, strip
+        except Exception:
+            return False, 0.0, np.zeros((10, 10, 3), dtype=np.uint8)
 
     def activate_game_window(self):
         try:
@@ -1295,19 +1374,50 @@ class MacroWorker(QThread):
         if not self.ensure_inventory_closed("[ระบบทอง]"):
             return False
         self.log_signal.emit("[ระบบทอง] กำลังเริ่มระบบฟาร์มใหม่...")
-        if not self.hold_game_key("e", 1.5):
-            return False
-        time.sleep(1.5)
-        bg_img = self.capture_background(self.hwnd)
-        if bg_img is None:
-            return False
-        result = self.find_image(bg_img, "templates/auto_farm.png", 0.70)
-        if not result or result[0] is None:
-            self.log_signal.emit("[ระบบทอง] ไม่พบปุ่ม Auto Farm หลังปิดกระเป๋า")
-            return False
-        self.bg_click(self.hwnd, result[0], result[1])
-        self.log_signal.emit("[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ")
-        return True
+        for attempt in range(1, 4):
+            if not self.hold_game_key("e", 1.5):
+                return False
+            time.sleep(1.5)
+            bg_img = self.capture_background(self.hwnd)
+            if bg_img is None:
+                continue
+            h_img, w_img = bg_img.shape[:2]
+            scaled_af = self.get_scaled_region(self.auto_farm_region)
+            af_x = (
+                scaled_af[0] / w_img,
+                (scaled_af[0] + scaled_af[2]) / w_img,
+            ) if scaled_af else None
+            af_y = (
+                scaled_af[1] / h_img,
+                (scaled_af[1] + scaled_af[3]) / h_img,
+            ) if scaled_af else None
+            result = self.find_image(
+                bg_img, "templates/auto_farm.png", 0.75,
+                x_range=af_x, y_range=af_y,
+            )
+            if not result or result[0] is None:
+                result = self.find_image(
+                    bg_img, "templates/auto_farm.png", 0.70
+                )
+            if result and result[0] is not None:
+                self.bg_click(self.hwnd, result[0], result[1])
+                self.log_signal.emit("[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ")
+                return True
+            if attempt < 3:
+                self.log_signal.emit(
+                    f"[ระบบทอง] ยังไม่พบปุ่ม Auto Farm "
+                    f"กำลังลองใหม่ครั้งที่ {attempt + 1}/3"
+                )
+                time.sleep(1.0)
+        self.log_signal.emit(
+            "[ระบบทอง] ไม่พบปุ่ม Auto Farm หลังลอง 3 ครั้ง"
+        )
+        self.send_bug_webhook(
+            "เริ่ม Auto Farm ไม่สำเร็จ",
+            "ไม่พบปุ่ม Auto Farm หลังปิดกระเป๋าและลอง 3 ครั้ง",
+            alert_key="auto_farm_resume_failed",
+        )
+        return False
 
     def is_inventory_open(self, bg_img=None):
         """Detect the inventory panel before trusting item-template matches."""
@@ -2037,6 +2147,11 @@ class MacroWorker(QThread):
                 if not self.is_running:
                     time.sleep(0.5)
                     continue
+                if self.gold_discard_target is None:
+                    # Pick the first 20-30 target as soon as farming starts.
+                    # Previously the first target was created only after a
+                    # forced 30/40 synchronization disposal.
+                    self.choose_next_gold_target()
                 if self.recover_from_rockstar_confirmation(bg_img):
                     time.sleep(0.5)
                     continue
@@ -2217,7 +2332,7 @@ class MacroWorker(QThread):
                     # at 30/40 whenever the incremental counter missed frames.
                     should_check_absolute_count = (
                         not self.gold_count_synced
-                        or self.idle_inventory_recovery
+                        and not self.idle_inventory_recovery
                     )
                     count_result = (
                         self.find_gold_count(
@@ -2226,43 +2341,24 @@ class MacroWorker(QThread):
                         if can_dispose_now and should_check_absolute_count
                         else None
                     )
-                    # At 40/40 the saved 30/40 template can miss its strict
-                    # leading-digit sub-check by a fraction.  During idle
-                    # recovery, accept a strong count-template match only when
-                    # it is physically beside the already-confirmed gold icon.
+                    # During idle recovery require exact live 40/40 equality.
+                    # The previous broad gold_text match also accepted lower
+                    # counts and caused a second disposal after resume failed.
                     if (
                         can_dispose_now
                         and self.idle_inventory_recovery
-                        and (
-                            not count_result
-                            or count_result[0] is None
-                        )
                     ):
-                        full_text = self.find_image(
-                            bg_img,
-                            gold_text_path,
-                            0.78,
-                            x_range=gold_x,
-                            y_range=gold_y,
+                        full_confirmed, full_score, full_crop = (
+                            self.is_gold_exactly_full(bg_img, ore_x, ore_y)
                         )
-                        if full_text and full_text[0] is not None:
-                            text_x, text_y, text_score = full_text
-                            max_distance = 95.0 * max(
-                                w_img / 1600.0, h_img / 900.0
+                        if full_confirmed:
+                            count_result = (
+                                ore_x, ore_y, full_score, full_crop,
                             )
-                            distance = float(np.hypot(
-                                text_x - ore_x, text_y - ore_y
-                            ))
-                            if distance <= max_distance:
-                                count_result = (
-                                    text_x,
-                                    text_y,
-                                    text_score,
-                                    np.zeros((10, 10, 3), dtype=np.uint8),
-                                )
-                                self.log_signal.emit(
-                                    "[ระบบทอง] ยืนยันทองเต็ม 40/40 จากภาพสำรอง กำลังทิ้งทอง"
-                                )
+                            self.log_signal.emit(
+                                "[ระบบทอง] ยืนยันเลข 40/40 ตรงกัน "
+                                "กำลังทิ้งทอง"
+                            )
                     absolute_count_matched = (
                         count_result is not None
                         and count_result[0] is not None
@@ -2820,6 +2916,8 @@ class MainWindow(QMainWindow):
         self.last_toggle_time = now
         self.worker.is_running = not self.worker.is_running
         if self.worker.is_running:
+            if self.worker.gold_discard_target is None:
+                self.worker.choose_next_gold_target()
             self.worker.macro_started_at = time.time()
             self.worker.feed_low_streak = 0
             self.worker.feed_low_candidate = (False, False)
