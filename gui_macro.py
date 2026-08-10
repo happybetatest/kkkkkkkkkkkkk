@@ -304,6 +304,7 @@ class MacroWorker(QThread):
         self.character_idle_since = 0.0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
+        self.idle_recheck_not_before = 0.0
         self.last_rockstar_escape_time = 0.0
         self.discord_bug_alert_times = {}
         self.city_restart_times = ((2, 45), (17, 45))
@@ -433,6 +434,7 @@ class MacroWorker(QThread):
         self.character_idle_since = 0.0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
+        self.idle_recheck_not_before = 0.0
 
         resume_text = (
             "บอทจะทำงานต่ออัตโนมัติ"
@@ -1276,6 +1278,8 @@ class MacroWorker(QThread):
             return False
         inventory_open = self.is_inventory_open(bg_img)
         now = time.time()
+        if now < self.idle_recheck_not_before:
+            return False
         if now - self.last_activity_sample_time < 2.0:
             return False
         self.last_activity_sample_time = now
@@ -1401,8 +1405,22 @@ class MacroWorker(QThread):
                 )
             if result and result[0] is not None:
                 self.bg_click(self.hwnd, result[0], result[1])
-                self.log_signal.emit("[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ")
-                return True
+                self.log_signal.emit(
+                    "[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ "
+                    "กำลังเปิดกระเป๋ากลับมาค้างไว้"
+                )
+                time.sleep(2.0)
+                if self.ensure_inventory_open("[ระบบทอง]"):
+                    self.log_signal.emit(
+                        "[ระบบทอง] เปิดกระเป๋ากลับมาค้างไว้สำเร็จ"
+                    )
+                    return True
+                self.send_bug_webhook(
+                    "เปิดกระเป๋าหลังเริ่มฟาร์มไม่สำเร็จ",
+                    "Auto Farm เริ่มแล้ว แต่เปิดกระเป๋ากลับมาค้างไว้ไม่ได้",
+                    alert_key="inventory_reopen_after_farm_failed",
+                )
+                return False
             if attempt < 3:
                 self.log_signal.emit(
                     f"[ระบบทอง] ยังไม่พบปุ่ม Auto Farm "
@@ -1417,6 +1435,8 @@ class MacroWorker(QThread):
             "ไม่พบปุ่ม Auto Farm หลังปิดกระเป๋าและลอง 3 ครั้ง",
             alert_key="auto_farm_resume_failed",
         )
+        # Keep the inventory open even when Auto Farm could not be resumed.
+        self.ensure_inventory_open("[ระบบทอง]")
         return False
 
     def is_inventory_open(self, bg_img=None):
@@ -2278,11 +2298,15 @@ class MacroWorker(QThread):
                     and time.time() > self.idle_inventory_check_until
                 ):
                     self.log_signal.emit(
-                        "[ระบบทอง] ตรวจแล้วไม่พบทองเต็ม กำลังปิดกระเป๋าและกลับไปฟาร์ม"
+                        "[ระบบทอง] ตรวจแล้วทองยังไม่เต็ม "
+                        "ปล่อยกระเป๋าเปิดค้างไว้และไม่รบกวนการฟาร์ม"
                     )
                     self.idle_inventory_recovery = False
                     self.idle_inventory_check_until = 0.0
-                    self.resume_farming_after_inventory()
+                    self.idle_recheck_not_before = time.time() + 120.0
+                    # Recovery may have opened a previously closed bag. Never
+                    # close it merely because the character looked idle.
+                    self.ensure_inventory_open("[ระบบทอง]")
                     continue
 
                 gold_ore_path, gold_text_path = "templates/gold_ore.png", "templates/gold_text.png"
@@ -2926,6 +2950,7 @@ class MainWindow(QMainWindow):
             self.worker.last_activity_sample_time = 0.0
             self.worker.idle_inventory_recovery = False
             self.worker.idle_inventory_check_until = 0.0
+            self.worker.idle_recheck_not_before = 0.0
             self.worker.reset_diamond_cycle()
             self.start_btn.setText("หยุดทำงานบอทชั่วคราว [F9]")
             self.start_btn.setProperty("running", "true")
