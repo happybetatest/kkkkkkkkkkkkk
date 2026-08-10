@@ -259,10 +259,6 @@ class MacroWorker(QThread):
         self.force_store_test = False
         self.last_hud_check_time = 0.0
         self.last_feeding_attempt_time = 0.0
-        self.feeding_cooldown_seconds = 20 * 60
-        self.macro_started_at = 0.0
-        self.feed_low_streak = 0
-        self.feed_low_candidate = (False, False)
         self.last_diamond_check_time = 0.0
         self.last_diamond_storage_time = 0.0
         self.diamond_pass_streak = 0
@@ -304,12 +300,8 @@ class MacroWorker(QThread):
         self.character_idle_since = 0.0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
-        self.idle_recheck_not_before = 0.0
         self.last_rockstar_escape_time = 0.0
         self.discord_bug_alert_times = {}
-        self.city_restart_times = ((2, 45), (17, 45))
-        self.city_restart_pause_key = None
-        self.city_restart_resume_at = 0.0
 
     def set_config(self, key, config_type, value):
         if config_type == "threshold": self.thresholds[key] = value
@@ -346,57 +338,6 @@ class MacroWorker(QThread):
         self.diamond_cycle_started_at = time.time()
         self.diamond_full_streak = 0
 
-    def check_city_restart_pause(self):
-        """Pause input around the two daily city restart windows.
-
-        Pause two minutes before each restart and resume 15 minutes after it.
-        The worker stays enabled, but sends no game input during the window.
-        """
-        local_now = time.localtime()
-        minute_of_day = local_now.tm_hour * 60 + local_now.tm_min
-        active_key = None
-        for hour, minute in self.city_restart_times:
-            restart_minute = hour * 60 + minute
-            if restart_minute - 2 <= minute_of_day < restart_minute + 15:
-                active_key = f"{hour:02d}:{minute:02d}"
-                break
-
-        if active_key is not None:
-            if self.city_restart_pause_key != active_key:
-                self.city_restart_pause_key = active_key
-                self.hwnd = None
-                self.gold_disposal_stage = None
-                self.idle_inventory_recovery = False
-                self.feed_low_streak = 0
-                self.log_signal.emit(
-                    f"[ระบบเมืองรี] พักมาโครช่วงเมืองรี {active_key} "
-                    "และหยุดส่งปุ่มทั้งหมด"
-                )
-                self.send_bug_webhook(
-                    "พักมาโครช่วงเมืองรี",
-                    f"หยุดส่งปุ่มสำหรับรอบเมืองรี {active_key}",
-                    alert_key=f"city_restart:{active_key}",
-                    cooldown_seconds=3600.0,
-                )
-            return True
-
-        if self.city_restart_pause_key is not None:
-            finished_key = self.city_restart_pause_key
-            self.city_restart_pause_key = None
-            self.hwnd = None
-            self.watchdog_reconnecting = True
-            self.watchdog_resume_at = time.time() + 10.0
-            self.city_restart_resume_at = self.watchdog_resume_at
-            self.last_hud_check_time = 0.0
-            self.last_diamond_check_time = time.time()
-            self.last_activity_frame = None
-            self.character_idle_since = 0.0
-            self.log_signal.emit(
-                f"[ระบบเมืองรี] พ้นช่วงเมืองรี {finished_key} "
-                "กำลังค้นหา FiveM และจะกลับมาฟาร์มต่ออัตโนมัติ"
-            )
-        return False
-
     def reset_runtime_watchdog(self, reason):
         """Reset transient worker state without stopping the app or bot."""
         now = time.time()
@@ -414,9 +355,6 @@ class MacroWorker(QThread):
         self.last_runtime_error_time = 0.0
         self.last_hud_check_time = 0.0
         self.last_feeding_attempt_time = now
-        self.macro_started_at = now
-        self.feed_low_streak = 0
-        self.feed_low_candidate = (False, False)
         self.last_diamond_check_time = now
 
         # A reconnect may show a different game session. Cancel only transient
@@ -434,7 +372,6 @@ class MacroWorker(QThread):
         self.character_idle_since = 0.0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
-        self.idle_recheck_not_before = 0.0
 
         resume_text = (
             "บอทจะทำงานต่ออัตโนมัติ"
@@ -987,7 +924,7 @@ class MacroWorker(QThread):
 
     def choose_next_gold_target(self):
         choices = [
-            value for value in range(20, 31)
+            value for value in range(15, 31)
             if self.previous_gold_discard_target is None
             or abs(value - self.previous_gold_discard_target) > 3
         ]
@@ -1088,85 +1025,6 @@ class MacroWorker(QThread):
             return self.gold_estimated_count
         except Exception:
             return self.gold_estimated_count
-
-    def is_gold_exactly_full(self, bg_img, ore_x, ore_y):
-        """Confirm 40/40 by comparing the live numerator to denominator.
-
-        This uses glyphs from the same live frame, so it is independent of
-        anti-aliasing and UI scale.  It rejects 30/40 and other non-full counts
-        instead of broadly matching the saved gold_text crop.
-        """
-        try:
-            h_img, w_img = bg_img.shape[:2]
-            ore_path = self.resolve_template_path("templates/gold_ore.png")
-            sx, sy = self.get_template_scale(ore_path, w_img, h_img)
-            x0 = max(0, ore_x)
-            x1 = min(w_img, ore_x + max(24, int(round(45 * sx))))
-            y0 = max(0, ore_y - max(20, int(round(55 * sy))))
-            y1 = min(h_img, ore_y - max(5, int(round(15 * sy))))
-            strip = bg_img[y0:y1, x0:x1]
-            if strip.size == 0:
-                return False, 0.0, strip
-            gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
-            _, binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
-            count, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
-            glyphs = []
-            min_h = max(3, int(round(4 * sy)))
-            max_h = max(min_h + 1, int(round(12 * sy)))
-            for index in range(1, count):
-                gx, gy, gw, gh, area = map(int, stats[index])
-                if area >= 5 and min_h <= gh <= max_h and gw >= 2:
-                    glyphs.append((gx, gy, gw, gh, area))
-            glyphs.sort(key=lambda item: item[0])
-            best_score = 0.0
-            for anchor in glyphs:
-                row = [
-                    item for item in glyphs
-                    if abs(item[1] - anchor[1])
-                    <= max(2, int(round(2 * sy)))
-                ]
-                if len(row) < 4:
-                    continue
-                # The slash is the smallest interior glyph. Numerator glyphs
-                # are left of it and the fixed denominator 40 is right of it.
-                interior = list(enumerate(row[1:-1], start=1))
-                slash_index, _ = min(
-                    interior, key=lambda pair: (pair[1][4], pair[1][2])
-                )
-                numerator = row[:slash_index]
-                denominator = row[slash_index + 1:]
-                if not numerator or not denominator:
-                    continue
-
-                def crop_parts(parts):
-                    px0 = min(item[0] for item in parts)
-                    py0 = min(item[1] for item in parts)
-                    px1 = max(item[0] + item[2] for item in parts)
-                    py1 = max(item[1] + item[3] for item in parts)
-                    return binary[py0:py1, px0:px1]
-
-                numerator_img = cv2.resize(
-                    crop_parts(numerator), (30, 14),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-                denominator_img = cv2.resize(
-                    crop_parts(denominator), (30, 14),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-                correlation = float(cv2.matchTemplate(
-                    numerator_img, denominator_img,
-                    cv2.TM_CCOEFF_NORMED,
-                )[0, 0])
-                difference = float(
-                    np.mean(cv2.absdiff(numerator_img, denominator_img)) / 255.0
-                )
-                score = max(0.0, correlation) * max(0.0, 1.0 - difference)
-                best_score = max(best_score, score)
-                if correlation >= 0.50 and difference <= 0.28:
-                    return True, score, strip
-            return False, best_score, strip
-        except Exception:
-            return False, 0.0, np.zeros((10, 10, 3), dtype=np.uint8)
 
     def activate_game_window(self):
         try:
@@ -1272,14 +1130,11 @@ class MacroWorker(QThread):
 
     def update_character_idle_state(self, bg_img):
         """Open the inventory after a genuinely static gameplay interval."""
-        if self.gold_disposal_stage:
+        if self.is_inventory_open(bg_img) or self.gold_disposal_stage:
             self.last_activity_frame = None
             self.character_idle_since = 0.0
             return False
-        inventory_open = self.is_inventory_open(bg_img)
         now = time.time()
-        if now < self.idle_recheck_not_before:
-            return False
         if now - self.last_activity_sample_time < 2.0:
             return False
         self.last_activity_sample_time = now
@@ -1299,17 +1154,10 @@ class MacroWorker(QThread):
             return False
         if now - self.character_idle_since < 20.0:
             return False
-        if inventory_open:
-            self.log_signal.emit(
-                "[ระบบทอง] ตรวจพบตัวละครยืนนิ่ง 20 วินาที "
-                "กระเป๋าเปิดอยู่ กำลังเช็คทองเต็ม 40/40"
-            )
-        else:
-            self.log_signal.emit(
-                "[ระบบทอง] ตรวจพบตัวละครยืนนิ่ง 20 วินาที "
-                "กำลังเปิดกระเป๋าเช็คทองเต็ม 40/40"
-            )
-        if not inventory_open and not self.ensure_inventory_open("[ระบบทอง]"):
+        self.log_signal.emit(
+            "[ระบบทอง] ตรวจพบตัวละครยืนนิ่ง 20 วินาที กำลังเปิดกระเป๋าเช็คทองเต็ม"
+        )
+        if not self.ensure_inventory_open("[ระบบทอง]"):
             self.character_idle_since = now
             return False
         self.idle_inventory_recovery = True
@@ -1378,66 +1226,19 @@ class MacroWorker(QThread):
         if not self.ensure_inventory_closed("[ระบบทอง]"):
             return False
         self.log_signal.emit("[ระบบทอง] กำลังเริ่มระบบฟาร์มใหม่...")
-        for attempt in range(1, 4):
-            if not self.hold_game_key("e", 1.5):
-                return False
-            time.sleep(1.5)
-            bg_img = self.capture_background(self.hwnd)
-            if bg_img is None:
-                continue
-            h_img, w_img = bg_img.shape[:2]
-            scaled_af = self.get_scaled_region(self.auto_farm_region)
-            af_x = (
-                scaled_af[0] / w_img,
-                (scaled_af[0] + scaled_af[2]) / w_img,
-            ) if scaled_af else None
-            af_y = (
-                scaled_af[1] / h_img,
-                (scaled_af[1] + scaled_af[3]) / h_img,
-            ) if scaled_af else None
-            result = self.find_image(
-                bg_img, "templates/auto_farm.png", 0.75,
-                x_range=af_x, y_range=af_y,
-            )
-            if not result or result[0] is None:
-                result = self.find_image(
-                    bg_img, "templates/auto_farm.png", 0.70
-                )
-            if result and result[0] is not None:
-                self.bg_click(self.hwnd, result[0], result[1])
-                self.log_signal.emit(
-                    "[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ "
-                    "กำลังเปิดกระเป๋ากลับมาค้างไว้"
-                )
-                time.sleep(2.0)
-                if self.ensure_inventory_open("[ระบบทอง]"):
-                    self.log_signal.emit(
-                        "[ระบบทอง] เปิดกระเป๋ากลับมาค้างไว้สำเร็จ"
-                    )
-                    return True
-                self.send_bug_webhook(
-                    "เปิดกระเป๋าหลังเริ่มฟาร์มไม่สำเร็จ",
-                    "Auto Farm เริ่มแล้ว แต่เปิดกระเป๋ากลับมาค้างไว้ไม่ได้",
-                    alert_key="inventory_reopen_after_farm_failed",
-                )
-                return False
-            if attempt < 3:
-                self.log_signal.emit(
-                    f"[ระบบทอง] ยังไม่พบปุ่ม Auto Farm "
-                    f"กำลังลองใหม่ครั้งที่ {attempt + 1}/3"
-                )
-                time.sleep(1.0)
-        self.log_signal.emit(
-            "[ระบบทอง] ไม่พบปุ่ม Auto Farm หลังลอง 3 ครั้ง"
-        )
-        self.send_bug_webhook(
-            "เริ่ม Auto Farm ไม่สำเร็จ",
-            "ไม่พบปุ่ม Auto Farm หลังปิดกระเป๋าและลอง 3 ครั้ง",
-            alert_key="auto_farm_resume_failed",
-        )
-        # Keep the inventory open even when Auto Farm could not be resumed.
-        self.ensure_inventory_open("[ระบบทอง]")
-        return False
+        if not self.hold_game_key("e", 1.5):
+            return False
+        time.sleep(1.5)
+        bg_img = self.capture_background(self.hwnd)
+        if bg_img is None:
+            return False
+        result = self.find_image(bg_img, "templates/auto_farm.png", 0.70)
+        if not result or result[0] is None:
+            self.log_signal.emit("[ระบบทอง] ไม่พบปุ่ม Auto Farm หลังปิดกระเป๋า")
+            return False
+        self.bg_click(self.hwnd, result[0], result[1])
+        self.log_signal.emit("[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ")
+        return True
 
     def is_inventory_open(self, bg_img=None):
         """Detect the inventory panel before trusting item-template matches."""
@@ -1626,10 +1427,9 @@ class MacroWorker(QThread):
         if orig_pos is None:
             self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
             return False
-        # Do not send a blind Esc before feeding. Close only a confirmed open
-        # inventory; Esc was able to interact with unrelated GTA/Rockstar UI.
-        if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
+        if not self.send_game_key("esc"):
             return False
+        time.sleep(1.0)
         if not self.send_game_key("x"):
             return False
         time.sleep(1.0)
@@ -1696,33 +1496,13 @@ class MacroWorker(QThread):
         crop_w = mask.shape[1]
         hunger_px = np.sum(mask[:, :crop_w//2] > 0)
         thirst_px = np.sum(mask[:, crop_w//2:] > 0)
-        need_food = bool(hunger_px < self.hunger_limit)
-        need_water = bool(thirst_px < self.thirst_limit)
-        now = time.time()
-        if now - self.macro_started_at < 30.0:
-            self.feed_low_streak = 0
-            self.feed_low_candidate = (False, False)
-            return
-        candidate = (need_food, need_water)
-        if not any(candidate):
-            self.feed_low_streak = 0
-            self.feed_low_candidate = (False, False)
-            return
-        if candidate != self.feed_low_candidate:
-            self.feed_low_candidate = candidate
-            self.feed_low_streak = 1
-            return
-        self.feed_low_streak += 1
-        if self.feed_low_streak < 3:
-            return
-        if now - self.last_feeding_attempt_time < self.feeding_cooldown_seconds:
-            return
-        self.feed_low_streak = 0
-        self.last_feeding_attempt_time = now
-        self.log_signal.emit(
-            "[ระบบป้อนอาหาร] ยืนยันค่าหลอดต่ำต่อเนื่อง 3 รอบ กำลังเริ่มกิน"
-        )
-        self.execute_feeding_sequence(need_food, need_water)
+        need_food, need_water = hunger_px < self.hunger_limit, thirst_px < self.thirst_limit
+        if need_food or need_water:
+            now = time.time()
+            if now - self.last_feeding_attempt_time < 60.0:
+                return
+            self.last_feeding_attempt_time = now
+            self.execute_feeding_sequence(need_food, need_water)
 
     def double_click_at(self, abs_x, abs_y):
         try:
@@ -2039,21 +1819,12 @@ class MacroWorker(QThread):
                     slot_img, val, True,
                     f"ครบ {self.diamond_interval_minutes} นาที กำลังเก็บเพชรเข้ารถ"
                 )
-                stored = self.execute_store_diamonds_sequence()
-                # One timed attempt consumes this cycle whether or not the
-                # trunk UI was available.  Retrying every 120 seconds caused
-                # continuous bag close/open loops after the 40-minute timer.
-                self.diamond_cycle_started_at = time.time()
-                if stored:
+                if self.execute_store_diamonds_sequence():
+                    self.diamond_cycle_started_at = time.time()
                     self.log_signal.emit(
                         f"[ระบบเก็บเพชร] ขั้นต่อไป: "
                         f"เก็บเข้ารถรอบใหม่ในอีก "
                         f"{self.diamond_interval_minutes} นาที"
-                    )
-                else:
-                    self.log_signal.emit(
-                        f"[ระบบเก็บเพชร] รอบนี้เก็บไม่สำเร็จ "
-                        f"จะลองใหม่ในอีก {self.diamond_interval_minutes} นาที"
                     )
             else:
                 self.diamond_preview_signal.emit(
@@ -2115,9 +1886,6 @@ class MacroWorker(QThread):
     def run(self):
         while not self.is_exiting:
             try:
-                if self.is_running and self.check_city_restart_pause():
-                    time.sleep(1.0)
-                    continue
                 if not self.hwnd:
                     self.hwnd = self.get_window_hwnd(WINDOW_NAME)
                     if self.hwnd: self.connection_signal.emit(True, win32gui.GetWindowText(self.hwnd))
@@ -2167,11 +1935,6 @@ class MacroWorker(QThread):
                 if not self.is_running:
                     time.sleep(0.5)
                     continue
-                if self.gold_discard_target is None:
-                    # Pick the first 20-30 target as soon as farming starts.
-                    # Previously the first target was created only after a
-                    # forced 30/40 synchronization disposal.
-                    self.choose_next_gold_target()
                 if self.recover_from_rockstar_confirmation(bg_img):
                     time.sleep(0.5)
                     continue
@@ -2298,15 +2061,11 @@ class MacroWorker(QThread):
                     and time.time() > self.idle_inventory_check_until
                 ):
                     self.log_signal.emit(
-                        "[ระบบทอง] ตรวจแล้วทองยังไม่เต็ม "
-                        "ปล่อยกระเป๋าเปิดค้างไว้และไม่รบกวนการฟาร์ม"
+                        "[ระบบทอง] ตรวจแล้วไม่พบทองเต็ม กำลังปิดกระเป๋าและกลับไปฟาร์ม"
                     )
                     self.idle_inventory_recovery = False
                     self.idle_inventory_check_until = 0.0
-                    self.idle_recheck_not_before = time.time() + 120.0
-                    # Recovery may have opened a previously closed bag. Never
-                    # close it merely because the character looked idle.
-                    self.ensure_inventory_open("[ระบบทอง]")
+                    self.resume_farming_after_inventory()
                     continue
 
                 gold_ore_path, gold_text_path = "templates/gold_ore.png", "templates/gold_text.png"
@@ -2349,46 +2108,52 @@ class MacroWorker(QThread):
                         and self.gold_discard_target is not None
                         and estimated_count >= self.gold_discard_target
                     )
-                    # The saved count template is specifically 30/40.  Use it
-                    # only to synchronize the very first cycle (or for the
-                    # explicit full-inventory recovery).  Keeping it enabled
-                    # after sync made every random target eventually discard
-                    # at 30/40 whenever the incremental counter missed frames.
-                    should_check_absolute_count = (
-                        not self.gold_count_synced
-                        and not self.idle_inventory_recovery
-                    )
                     count_result = (
                         self.find_gold_count(
                             bg_img, ore_x, ore_y, target_thresh
                         )
-                        if can_dispose_now and should_check_absolute_count
+                        if can_dispose_now
                         else None
                     )
-                    # During idle recovery require exact live 40/40 equality.
-                    # The previous broad gold_text match also accepted lower
-                    # counts and caused a second disposal after resume failed.
+                    # At 40/40 the saved 30/40 template can miss its strict
+                    # leading-digit sub-check by a fraction.  During idle
+                    # recovery, accept a strong count-template match only when
+                    # it is physically beside the already-confirmed gold icon.
                     if (
                         can_dispose_now
                         and self.idle_inventory_recovery
-                    ):
-                        full_confirmed, full_score, full_crop = (
-                            self.is_gold_exactly_full(bg_img, ore_x, ore_y)
+                        and (
+                            not count_result
+                            or count_result[0] is None
                         )
-                        if full_confirmed:
-                            count_result = (
-                                ore_x, ore_y, full_score, full_crop,
+                    ):
+                        full_text = self.find_image(
+                            bg_img,
+                            gold_text_path,
+                            0.78,
+                            x_range=gold_x,
+                            y_range=gold_y,
+                        )
+                        if full_text and full_text[0] is not None:
+                            text_x, text_y, text_score = full_text
+                            max_distance = 95.0 * max(
+                                w_img / 1600.0, h_img / 900.0
                             )
-                            self.log_signal.emit(
-                                "[ระบบทอง] ยืนยันเลข 40/40 ตรงกัน "
-                                "กำลังทิ้งทอง"
-                            )
-                    absolute_count_matched = (
-                        count_result is not None
-                        and count_result[0] is not None
-                    )
+                            distance = float(np.hypot(
+                                text_x - ore_x, text_y - ore_y
+                            ))
+                            if distance <= max_distance:
+                                count_result = (
+                                    text_x,
+                                    text_y,
+                                    text_score,
+                                    np.zeros((10, 10, 3), dtype=np.uint8),
+                                )
+                                self.log_signal.emit(
+                                    "[ระบบทอง] ยืนยันทองเต็ม 40/40 จากภาพสำรอง กำลังทิ้งทอง"
+                                )
                     if can_dispose_now and (
-                        absolute_count_matched or random_target_reached
+                        count_result or random_target_reached
                     ):
                         if random_target_reached:
                             count_result = (
@@ -2940,17 +2705,11 @@ class MainWindow(QMainWindow):
         self.last_toggle_time = now
         self.worker.is_running = not self.worker.is_running
         if self.worker.is_running:
-            if self.worker.gold_discard_target is None:
-                self.worker.choose_next_gold_target()
-            self.worker.macro_started_at = time.time()
-            self.worker.feed_low_streak = 0
-            self.worker.feed_low_candidate = (False, False)
             self.worker.last_activity_frame = None
             self.worker.character_idle_since = 0.0
             self.worker.last_activity_sample_time = 0.0
             self.worker.idle_inventory_recovery = False
             self.worker.idle_inventory_check_until = 0.0
-            self.worker.idle_recheck_not_before = 0.0
             self.worker.reset_diamond_cycle()
             self.start_btn.setText("หยุดทำงานบอทชั่วคราว [F9]")
             self.start_btn.setProperty("running", "true")
