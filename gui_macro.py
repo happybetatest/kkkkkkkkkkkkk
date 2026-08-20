@@ -429,7 +429,7 @@ class MacroWorker(QThread):
     def send_bug_webhook(
         self, title, detail, alert_key=None, cooldown_seconds=300.0
     ):
-        """Send a rate-limited bug alert through the configured webhook."""
+        """Send a rate-limited bug alert and current FiveM frame to Discord."""
         if not self.discord_webhook_url:
             return False
         now = time.time()
@@ -455,13 +455,40 @@ class MacroWorker(QThread):
             },
             ensure_ascii=False,
         ).encode("utf-8")
+        screenshot = self.capture_background(self.hwnd)
+        screenshot_attached = False
+        headers = {"User-Agent": "FiveM-Farming/1.0"}
+        request_data = payload
+        if screenshot is not None:
+            encoded, png_bytes = cv2.imencode(".png", screenshot)
+            if encoded:
+                # Discord requires multipart/form-data whenever a webhook
+                # message includes a file attachment.
+                boundary = f"----FiveMFarming{int(now * 1000)}"
+                separator = f"--{boundary}\r\n".encode("ascii")
+                request_data = b"".join((
+                    separator,
+                    b'Content-Disposition: form-data; name="payload_json"\r\n',
+                    b"Content-Type: application/json\r\n\r\n",
+                    payload,
+                    b"\r\n",
+                    separator,
+                    b'Content-Disposition: form-data; name="files[0]"; filename="bug_screenshot.png"\r\n',
+                    b"Content-Type: image/png\r\n\r\n",
+                    png_bytes.tobytes(),
+                    b"\r\n",
+                    f"--{boundary}--\r\n".encode("ascii"),
+                ))
+                headers["Content-Type"] = (
+                    f"multipart/form-data; boundary={boundary}"
+                )
+                screenshot_attached = True
+        if not screenshot_attached:
+            headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
             self.discord_webhook_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "FiveM-Farming/1.0",
-            },
+            data=request_data,
+            headers=headers,
             method="POST",
         )
         try:
@@ -470,8 +497,9 @@ class MacroWorker(QThread):
             ) as response:
                 if response.status not in (200, 204):
                     raise RuntimeError(f"Discord HTTP {response.status}")
+            image_status = "พร้อมภาพหน้าจอ" if screenshot_attached else "ไม่มีภาพหน้าจอ"
             self.log_signal.emit(
-                f"[Discord] ส่งแจ้งเตือนบัคสำเร็จ: {title}"
+                f"[Discord] ส่งแจ้งเตือนบัคสำเร็จ: {title} ({image_status})"
             )
             return True
         except Exception as error:
@@ -1237,6 +1265,14 @@ class MacroWorker(QThread):
             self.log_signal.emit("[ระบบทอง] ไม่พบปุ่ม Auto Farm หลังปิดกระเป๋า")
             return False
         self.bg_click(self.hwnd, result[0], result[1])
+        time.sleep(1.0)
+        # Farming is monitored from the inventory screen.  Re-open it only
+        # after Auto Farm has been clicked, matching the food and car cycles.
+        if not self.ensure_inventory_open("[ระบบทอง]"):
+            self.log_signal.emit(
+                "[ระบบทอง] เริ่มฟาร์มแล้ว แต่เปิดกระเป๋ากลับไม่สำเร็จ"
+            )
+            return False
         self.log_signal.emit("[ระบบทอง] เริ่มระบบฟาร์มใหม่สำเร็จ")
         return True
 
@@ -1614,9 +1650,21 @@ class MacroWorker(QThread):
         if not self.send_game_key("x"):
             return False
         time.sleep(1.0)
-        if not self.send_game_key("h"):
+        # The trunk requires H, but FiveM/NUI only receives it reliably when
+        # its client has both keyboard focus and the pointer inside the game.
+        # Do this immediately before H so the key cannot reach another window.
+        if self.activate_game_window() is None:
             return False
-        time.sleep(1.5)
+        geometry = self.get_client_geometry()
+        if not geometry:
+            self.log_signal.emit("[ระบบเก็บเพชร] อ่านพื้นที่ FiveM ไม่ได้ จึงไม่กด H")
+            return False
+        game_x, game_y, game_w, game_h = geometry
+        win32api.SetCursorPos((game_x + game_w // 2, game_y + game_h // 2))
+        time.sleep(0.2)
+        if not self.send_game_key("h", duration=0.15):
+            return False
+        time.sleep(1.3)
         trunk_opened = False
         stored_successfully = False
         bg_img = self.capture_background(self.hwnd)
