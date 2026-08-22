@@ -3171,16 +3171,22 @@ def check_license_or_prompt():
             ctx = ssl.create_default_context()
 
         def get_hwid():
-            raw = ""
             try:
-                cmd = subprocess.Popen("wmic csproduct get uuid", stdout=subprocess.PIPE, shell=True, text=True)
-                out, _ = cmd.communicate()
-                ls = [line.strip() for line in out.splitlines() if line.strip()]
-                if len(ls) >= 2: raw += ls[1]
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+                guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+                if guid: return hashlib.sha256(str(guid).strip().encode("utf-8")).hexdigest()
             except Exception:
                 pass
-            if not raw: raw = f"{os.environ.get('COMPUTERNAME', 'PC')}-{os.environ.get('USERNAME', 'USER')}-FIVEM"
-            return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            try:
+                cmd = subprocess.Popen("wmic csproduct get uuid", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, text=True)
+                out, _ = cmd.communicate()
+                lines = [l.strip() for l in out.splitlines() if l.strip()]
+                if len(lines) >= 2 and lines[1]: return hashlib.sha256(lines[1].encode("utf-8")).hexdigest()
+            except Exception:
+                pass
+            fallback = f"{os.environ.get('COMPUTERNAME', 'PC')}-{os.environ.get('USERNAME', 'USER')}-FIVEM"
+            return hashlib.sha256(fallback.encode("utf-8")).hexdigest()
 
         def get_key_storage_path():
             app_d = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "FiveM-Farming")

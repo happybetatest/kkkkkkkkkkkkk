@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import ssl
@@ -21,22 +21,7 @@ API_URL = "https://keyauth.win/api/1.2/"
 
 
 def get_hwid():
-    raw_hwid = ""
-    try:
-        cmd = subprocess.Popen(
-            "wmic csproduct get uuid",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=True,
-            text=True
-        )
-        out, _ = cmd.communicate()
-        lines = [line.strip() for line in out.splitlines() if line.strip()]
-        if len(lines) >= 2:
-            raw_hwid += lines[1]
-    except Exception:
-        pass
-
+    """Consistent, standardized HWID for Windows."""
     try:
         import winreg
         key = winreg.OpenKey(
@@ -46,14 +31,22 @@ def get_hwid():
             winreg.KEY_READ | winreg.KEY_WOW64_64KEY
         )
         guid, _ = winreg.QueryValueEx(key, "MachineGuid")
-        raw_hwid += f"-{guid}"
+        if guid:
+            return hashlib.sha256(str(guid).strip().encode("utf-8")).hexdigest()
     except Exception:
         pass
 
-    if not raw_hwid:
-        raw_hwid = f"{os.environ.get('COMPUTERNAME', 'PC')}-{os.environ.get('USERNAME', 'USER')}-FIVEM"
+    try:
+        cmd = subprocess.Popen("wmic csproduct get uuid", stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, text=True)
+        out, _ = cmd.communicate()
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        if len(lines) >= 2 and lines[1]:
+            return hashlib.sha256(lines[1].encode("utf-8")).hexdigest()
+    except Exception:
+        pass
 
-    return hashlib.sha256(raw_hwid.encode("utf-8")).hexdigest()
+    fallback = f"{os.environ.get('COMPUTERNAME', 'PC')}-{os.environ.get('USERNAME', 'USER')}-FIVEM"
+    return hashlib.sha256(fallback.encode("utf-8")).hexdigest()
 
 
 class KeyAuthClient:
