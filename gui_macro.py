@@ -3157,10 +3157,105 @@ class MainWindow(QMainWindow):
         self.worker.set_config("webhook", "diamond", self.discord_webhook_url)
         self.save_private_settings()
 
+def check_license_or_prompt():
+    """Verify saved KeyAuth license or prompt user to enter key before running."""
+    try:
+        from keyauth_helper import KeyAuthClient, load_saved_key, save_key, get_hwid
+    except Exception:
+        return True, ""
+
+    saved_key = load_saved_key()
+    client = KeyAuthClient()
+    if saved_key:
+        ok, msg, info = client.verify_license(saved_key)
+        if ok:
+            return True, info.get("expiry", "")
+
+    from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout
+    dialog = QDialog()
+    dialog.setWindowTitle("FiveM Farming - ยืนยันสิทธิ์การใช้งาน (KeyAuth)")
+    dialog.setFixedSize(450, 240)
+    dialog.setStyleSheet(
+        "QDialog { background: #f8fafc; font-family: 'Segoe UI', Tahoma, sans-serif; }"
+        "QLabel { color: #0f172a; }"
+        "QLineEdit { padding: 8px 12px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: white; font-size: 13px; color: #1e293b; }"
+        "QLineEdit:focus { border-color: #0ea5e9; }"
+        "QPushButton { padding: 8px 16px; border-radius: 6px; font-weight: bold; background: #0ea5e9; color: white; border: none; font-size: 13px; }"
+        "QPushButton:hover { background: #0284c7; }"
+        "QPushButton#btn_copy { background: #e2e8f0; color: #334155; font-size: 11px; padding: 2px 8px; }"
+        "QPushButton#btn_copy:hover { background: #cbd5e1; }"
+    )
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(24, 20, 24, 20)
+    layout.setSpacing(12)
+
+    title = QLabel("🔑 กรุณากรอก License Key เพื่อเปิดใช้งาน")
+    title.setStyleSheet("font-size: 15px; font-weight: bold;")
+    layout.addWidget(title)
+
+    hwid_row = QHBoxLayout()
+    hwid_val = get_hwid()
+    hwid_lbl = QLabel(f"HWID: <b style='color:#0ea5e9;'>{hwid_val[:18]}...</b>")
+    hwid_lbl.setStyleSheet("font-size: 11px; color: #64748b;")
+    btn_copy = QPushButton("คัดลอก HWID")
+    btn_copy.setObjectName("btn_copy")
+    btn_copy.setFixedHeight(24)
+    btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(hwid_val))
+    hwid_row.addWidget(hwid_lbl)
+    hwid_row.addStretch()
+    hwid_row.addWidget(btn_copy)
+    layout.addLayout(hwid_row)
+
+    key_input = QLineEdit()
+    key_input.setPlaceholderText("กรอก License Key ของคุณ...")
+    if saved_key:
+        key_input.setText(saved_key)
+    layout.addWidget(key_input)
+
+    status_lbl = QLabel("")
+    status_lbl.setStyleSheet("font-size: 11px; color: #ef4444;")
+    layout.addWidget(status_lbl)
+
+    btn = QPushButton("ยืนยัน Key (Activate)")
+    layout.addWidget(btn)
+
+    verified_expiry = [""]
+
+    def on_activate():
+        k = key_input.text().strip()
+        if not k:
+            status_lbl.setText("กรุณากรอก License Key")
+            return
+        btn.setEnabled(False)
+        btn.setText("กำลังตรวจสอบ...")
+        QApplication.processEvents()
+        ok, msg, info = client.verify_license(k)
+        btn.setEnabled(True)
+        btn.setText("ยืนยัน Key (Activate)")
+        if ok:
+            save_key(k)
+            verified_expiry[0] = info.get("expiry", "")
+            dialog.accept()
+        else:
+            status_lbl.setText(f"❌ {msg}")
+
+    btn.clicked.connect(on_activate)
+    if dialog.exec() == QDialog.Accepted:
+        return True, verified_expiry[0]
+    return False, ""
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_fixed_light_theme(app)
+    
+    ok, expiry = check_license_or_prompt()
+    if not ok:
+        sys.exit(0)
+
     window = MainWindow()
+    if expiry:
+        window.setWindowTitle(f"FiveM Farming - Macro (หมดอายุ: {expiry})")
     window.show()
     force_light_title_bar(window)
     sys.exit(app.exec())

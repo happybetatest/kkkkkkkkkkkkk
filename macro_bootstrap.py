@@ -30,6 +30,9 @@ def main():
     # Keep the unchanged macro beside config.json and templates, exactly like
     # the working setup on the main PC.
     shutil.copy2(packaged_macro, macro)
+    packaged_keyauth = os.path.join(app_dir, "templates", "_app", "keyauth_helper.py")
+    if os.path.isfile(packaged_keyauth):
+        shutil.copy2(packaged_keyauth, os.path.join(app_dir, "keyauth_helper.py"))
     child_env = os.environ.copy()
     child_env["FIVEM_CAPTURE_BITBLT"] = "1"
     subprocess.Popen(

@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import shutil
@@ -9,8 +9,13 @@ import tempfile
 import urllib.request
 import zipfile
 import certifi
-from PySide6.QtCore import QThread, Signal, QTimer
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QProgressBar, QVBoxLayout, QWidget
+from PySide6.QtCore import QThread, Signal, QTimer, Qt
+from PySide6.QtWidgets import (
+    QApplication, QLabel, QMainWindow, QMessageBox, QProgressBar,
+    QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QPushButton, QFrame
+)
+
+from keyauth_helper import KeyAuthClient, load_saved_key, save_key, get_hwid
 
 
 REPOSITORY = "happybetatest/kkkkkkkkkkkkk"
@@ -52,6 +57,19 @@ def safe_extract(archive, destination):
             if os.path.commonpath([destination_abs, target]) != destination_abs:
                 raise ValueError("Unsafe path in update package")
         zipped.extractall(destination_abs)
+
+
+class LicenseWorker(QThread):
+    finished = Signal(bool, str, dict)
+
+    def __init__(self, key):
+        super().__init__()
+        self.key = key
+
+    def run(self):
+        client = KeyAuthClient()
+        success, message, info = client.verify_license(self.key)
+        self.finished.emit(success, message, info)
 
 
 class UpdateWorker(QThread):
@@ -111,14 +129,11 @@ class UpdateWorker(QThread):
                         "กำลังติดตั้งไฟล์เวอร์ชันใหม่…",
                         85,
                     )
-                    for name in (APP_EXE, "config.json", "templates"):
+                    for name in (APP_EXE, "config.json", "templates", "keyauth_helper.py"):
                         source = os.path.join(staging, name)
                         target = os.path.join(APP_DIR, name)
                         if not os.path.exists(source):
                             continue
-                        # Keep each PC's selected diamond mode, regions and
-                        # thresholds across updates. New config keys still get
-                        # safe defaults from gui_macro.py when absent.
                         if name == "config.json" and os.path.isfile(target):
                             continue
                         if os.path.isdir(source):
@@ -148,31 +163,138 @@ class LauncherWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FiveM Farming Launcher")
-        self.setFixedSize(500, 220)
+        self.setFixedSize(520, 290)
         self.setStyleSheet(
-            "QMainWindow, QWidget { background: #f8fafc; }"
-            "QLabel { color: #0f172a; font-family: Tahoma; }"
-            "QProgressBar { height: 20px; text-align: center; }"
-            "QProgressBar::chunk { background: #10b981; }"
+            "QMainWindow, QWidget { background: #f8fafc; font-family: 'Segoe UI', Tahoma, sans-serif; }"
+            "QLabel { color: #0f172a; }"
+            "QProgressBar { height: 18px; text-align: center; border-radius: 9px; background: #e2e8f0; }"
+            "QProgressBar::chunk { background: #10b981; border-radius: 9px; }"
+            "QLineEdit { padding: 8px 12px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: white; font-size: 13px; color: #1e293b; }"
+            "QLineEdit:focus { border-color: #0ea5e9; }"
+            "QPushButton { padding: 8px 16px; border-radius: 6px; font-weight: bold; font-size: 13px; }"
+            "QPushButton#btn_primary { background: #0ea5e9; color: white; border: none; }"
+            "QPushButton#btn_primary:hover { background: #0284c7; }"
+            "QPushButton#btn_secondary { background: #e2e8f0; color: #334155; border: none; }"
+            "QPushButton#btn_secondary:hover { background: #cbd5e1; }"
         )
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(16)
-        self.title_label = QLabel("กำลังตรวจสอบเวอร์ชันล่าสุด…")
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self.detail_label = QLabel("เชื่อมต่อ GitHub")
-        self.detail_label.setStyleSheet("font-size: 12px;")
+        self.central = QWidget()
+        self.layout = QVBoxLayout(self.central)
+        self.layout.setContentsMargins(28, 24, 28, 24)
+        self.layout.setSpacing(14)
+        self.setCentralWidget(self.central)
+
+        # Progress / Status View Components
+        self.title_label = QLabel("กำลังตรวจสอบสิทธิ์การใช้งาน (KeyAuth)…")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #0f172a;")
+        self.detail_label = QLabel("กำลังเชื่อมต่อเซิร์ฟเวอร์...")
+        self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.detail_label)
-        self.setCentralWidget(central)
 
+        # License Input View Components
+        self.key_container = QWidget()
+        key_layout = QVBoxLayout(self.key_container)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(10)
+
+        hwid_row = QHBoxLayout()
+        hwid_str = get_hwid()[:18] + "..."
+        hwid_lbl = QLabel(f"รหัสเครื่อง (HWID): <b style='color:#0ea5e9;'>{hwid_str}</b>")
+        hwid_lbl.setStyleSheet("font-size: 11px; color: #475569;")
+        btn_copy_hwid = QPushButton("คัดลอก HWID")
+        btn_copy_hwid.setObjectName("btn_secondary")
+        btn_copy_hwid.setFixedHeight(26)
+        btn_copy_hwid.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        btn_copy_hwid.clicked.connect(self.copy_hwid)
+        hwid_row.addWidget(hwid_lbl)
+        hwid_row.addStretch()
+        hwid_row.addWidget(btn_copy_hwid)
+        key_layout.addLayout(hwid_row)
+
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("กรอก License Key ของคุณ...")
+        key_layout.addWidget(self.key_input)
+
+        btn_row = QHBoxLayout()
+        self.btn_activate = QPushButton("ยืนยัน Key (Activate)")
+        self.btn_activate.setObjectName("btn_primary")
+        self.btn_activate.clicked.connect(self.on_activate_clicked)
+        btn_row.addWidget(self.btn_activate)
+        key_layout.addLayout(btn_row)
+
+        self.layout.addWidget(self.title_label)
+        self.layout.addWidget(self.progress)
+        self.layout.addWidget(self.key_container)
+        self.layout.addWidget(self.detail_label)
+
+        self.key_container.hide()
         self.worker = None
-        QTimer.singleShot(0, self.choose_version)
+        self.license_worker = None
+
+        QTimer.singleShot(100, self.check_saved_license)
+
+    def copy_hwid(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(get_hwid())
+        self.detail_label.setText("คัดลอก HWID ไปยังคลิปบอร์ดแล้ว!")
+        self.detail_label.setStyleSheet("font-size: 12px; color: #10b981;")
+
+    def check_saved_license(self):
+        saved_key = load_saved_key()
+        if saved_key:
+            self.title_label.setText("กำลังตรวจสอบ License Key...")
+            self.detail_label.setText("เชื่อมต่อระบบ KeyAuth...")
+            self.progress.setValue(30)
+            self.verify_key(saved_key)
+        else:
+            self.show_key_input_screen("กรุณากรอก License Key เพื่อเริ่มใช้งาน")
+
+    def show_key_input_screen(self, msg=""):
+        self.progress.hide()
+        self.key_container.show()
+        self.title_label.setText("🔑 ยืนยันสิทธิ์การใช้งาน (License Key)")
+        if msg:
+            self.detail_label.setText(msg)
+            self.detail_label.setStyleSheet("font-size: 12px; color: #ef4444;")
+        else:
+            self.detail_label.setText("ใส่ License Key ที่ได้รับจากผู้ขาย")
+            self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
+
+    def on_activate_clicked(self):
+        key = self.key_input.text().strip()
+        if not key:
+            self.detail_label.setText("กรุณากรอก License Key")
+            self.detail_label.setStyleSheet("font-size: 12px; color: #ef4444;")
+            return
+
+        self.btn_activate.setEnabled(False)
+        self.btn_activate.setText("กำลังตรวจสอบ...")
+        self.detail_label.setText("กำลังติดต่อเซิร์ฟเวอร์ KeyAuth...")
+        self.detail_label.setStyleSheet("font-size: 12px; color: #0ea5e9;")
+        self.verify_key(key)
+
+    def verify_key(self, key):
+        self.license_worker = LicenseWorker(key)
+        self.license_worker.finished.connect(self.on_license_result)
+        self.license_worker.start()
+
+    def on_license_result(self, success, message, info):
+        self.btn_activate.setEnabled(True)
+        self.btn_activate.setText("ยืนยัน Key (Activate)")
+
+        if success:
+            expiry = info.get("expiry", "ไม่ระบุ")
+            save_key(info.get("key", ""))
+            self.key_container.hide()
+            self.progress.show()
+            self.progress.setValue(100)
+            self.title_label.setText("✅ ยืนยันสิทธิ์สำเร็จ!")
+            self.detail_label.setText(f"อายุการใช้งาน: {expiry}")
+            self.detail_label.setStyleSheet("font-size: 12px; color: #10b981; font-weight: bold;")
+            QTimer.singleShot(800, self.choose_version)
+        else:
+            self.show_key_input_screen(f"❌ {message}")
 
     def choose_version(self):
         app_path = os.path.join(APP_DIR, APP_EXE)
@@ -217,6 +339,7 @@ class LauncherWindow(QMainWindow):
     def set_status(self, title, detail, progress):
         self.title_label.setText(title)
         self.detail_label.setText(detail)
+        self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
         self.progress.setValue(progress)
 
     def show_failure(self, error):
