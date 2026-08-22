@@ -310,27 +310,12 @@ class LauncherWindow(QMainWindow):
         self.progress.setValue(progress)
 
     def show_failure(self, error):
-        app_path = os.path.join(APP_DIR, APP_EXE)
-        if os.path.isfile(app_path):
-            answer = QMessageBox.question(
-                self,
-                "อัปเดตไม่สำเร็จ",
-                "ไม่สามารถติดตั้งเวอร์ชันล่าสุดได้\n\n"
-                f"รายละเอียด: {error}\n\n"
-                "ต้องการเปิดเวอร์ชันเดิมที่ติดตั้งอยู่หรือไม่?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer == QMessageBox.Yes:
-                self.launch_app(app_path)
-                return
-        else:
-            QMessageBox.critical(
-                self,
-                "อัปเดตไม่สำเร็จ",
-                "ไม่สามารถติดตั้งเวอร์ชันล่าสุด และยังไม่มีเวอร์ชันเดิมในเครื่อง\n\n"
-                f"รายละเอียด: {error}",
-            )
+        QMessageBox.critical(
+            self,
+            "อัปเดตไม่สำเร็จ",
+            "ไม่สามารถอัปเดตเป็นเวอร์ชันล่าสุดได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต\n\n"
+            f"รายละเอียด: {error}",
+        )
         self.close()
 
     def launch_app(self, app_path):
