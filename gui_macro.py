@@ -3162,7 +3162,83 @@ def check_license_or_prompt():
     try:
         from keyauth_helper import KeyAuthClient, load_saved_key, save_key, get_hwid
     except Exception:
-        return True, ""
+        # Fallback inline implementation if helper file is missing
+        import hashlib, subprocess, urllib.request, urllib.parse, ssl
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            ctx = ssl.create_default_context()
+
+        def get_hwid():
+            raw = ""
+            try:
+                cmd = subprocess.Popen("wmic csproduct get uuid", stdout=subprocess.PIPE, shell=True, text=True)
+                out, _ = cmd.communicate()
+                ls = [line.strip() for line in out.splitlines() if line.strip()]
+                if len(ls) >= 2: raw += ls[1]
+            except Exception:
+                pass
+            if not raw: raw = f"{os.environ.get('COMPUTERNAME', 'PC')}-{os.environ.get('USERNAME', 'USER')}-FIVEM"
+            return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+        def get_key_storage_path():
+            app_d = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "FiveM-Farming")
+            os.makedirs(app_d, exist_ok=True)
+            return os.path.join(app_d, ".license_key")
+
+        def load_saved_key():
+            p = get_key_storage_path()
+            return open(p, "r", encoding="utf-8").read().strip() if os.path.isfile(p) else ""
+
+        def save_key(k):
+            try:
+                open(get_key_storage_path(), "w", encoding="utf-8").write(str(k).strip())
+            except Exception:
+                pass
+
+        class KeyAuthClient:
+            def __init__(self):
+                self.name = "Chatchai09122546's Application"
+                self.ownerid = "B3zvHP2liv"
+                self.version = "1.0"
+                self.session_id = None
+
+            def init(self):
+                try:
+                    data = urllib.parse.urlencode({"type": "init", "ver": self.version, "name": self.name, "ownerid": self.ownerid}).encode("utf-8")
+                    req = urllib.request.Request("https://keyauth.win/api/1.2/", data=data, headers={"User-Agent": "KeyAuth"})
+                    res = json.loads(urllib.request.urlopen(req, timeout=12, context=ctx).read().decode("utf-8"))
+                    if res.get("success"):
+                        self.session_id = res.get("sessionid")
+                        return True, ""
+                    return False, res.get("message", "Init failed")
+                except Exception as e:
+                    return False, str(e)
+
+            def verify_license(self, key):
+                if not key: return False, "กรุณากรอก License Key", {}
+                ok, msg = self.init()
+                if not ok: return False, msg, {}
+                try:
+                    data = urllib.parse.urlencode({"type": "license", "key": key, "hwid": get_hwid(), "sessionid": self.session_id, "name": self.name, "ownerid": self.ownerid}).encode("utf-8")
+                    req = urllib.request.Request("https://keyauth.win/api/1.2/", data=data, headers={"User-Agent": "KeyAuth"})
+                    res = json.loads(urllib.request.urlopen(req, timeout=15, context=ctx).read().decode("utf-8"))
+                    if res.get("success"):
+                        subs = res.get("info", {}).get("subscriptions", [])
+                        exp = "ถาวร (Lifetime)"
+                        if subs and isinstance(subs, list):
+                            ts = subs[0].get("expiry")
+                            if ts:
+                                try:
+                                    import datetime
+                                    exp = datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
+                                except Exception:
+                                    exp = str(ts)
+                        return True, "ยืนยันคีย์สำเร็จ!", {"key": key, "expiry": exp}
+                    return False, res.get("message", "คีย์ไม่ถูกต้อง หรือหมดอายุ"), {}
+                except Exception as e:
+                    return False, f"ข้อผิดพลาด: {e}", {}
 
     saved_key = load_saved_key()
     client = KeyAuthClient()
@@ -3174,7 +3250,7 @@ def check_license_or_prompt():
     from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout
     dialog = QDialog()
     dialog.setWindowTitle("FiveM Farming - ยืนยันสิทธิ์การใช้งาน (KeyAuth)")
-    dialog.setFixedSize(450, 240)
+    dialog.setFixedSize(460, 240)
     dialog.setStyleSheet(
         "QDialog { background: #f8fafc; font-family: 'Segoe UI', Tahoma, sans-serif; }"
         "QLabel { color: #0f172a; }"
@@ -3189,13 +3265,13 @@ def check_license_or_prompt():
     layout.setContentsMargins(24, 20, 24, 20)
     layout.setSpacing(12)
 
-    title = QLabel("🔑 กรุณากรอก License Key เพื่อเปิดใช้งาน")
-    title.setStyleSheet("font-size: 15px; font-weight: bold;")
+    title = QLabel("🔑 กรุณากรอก License Key เพื่อเริ่มใช้งาน")
+    title.setStyleSheet("font-size: 15px; font-weight: bold; color: #0f172a;")
     layout.addWidget(title)
 
     hwid_row = QHBoxLayout()
     hwid_val = get_hwid()
-    hwid_lbl = QLabel(f"HWID: <b style='color:#0ea5e9;'>{hwid_val[:18]}...</b>")
+    hwid_lbl = QLabel(f"รหัสเครื่อง (HWID): <b style='color:#0ea5e9;'>{hwid_val[:18]}...</b>")
     hwid_lbl.setStyleSheet("font-size: 11px; color: #64748b;")
     btn_copy = QPushButton("คัดลอก HWID")
     btn_copy.setObjectName("btn_copy")
