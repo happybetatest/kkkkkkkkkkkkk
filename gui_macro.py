@@ -1141,10 +1141,43 @@ class MacroWorker(QThread):
         send_key_direct(key_name, duration=duration)
         return win32gui.GetForegroundWindow() == self.hwnd
 
+    def is_pause_menu_open(self, bg_img=None):
+        """Check if GTA V Pause Menu (Map/Settings/Rockstar Editor header) is on screen."""
+        if bg_img is None:
+            bg_img = self.capture_background(self.hwnd)
+        if bg_img is None:
+            return False
+        try:
+            h_img, w_img = bg_img.shape[:2]
+            top_bar = bg_img[0:int(h_img * 0.12), :]
+            top_gray = cv2.cvtColor(top_bar, cv2.COLOR_BGR2GRAY)
+            dark_ratio = float(np.mean(top_gray < 30))
+            bright_ratio = float(np.mean(top_gray > 220))
+            bot_bar = bg_img[int(h_img * 0.90):, :]
+            bot_gray = cv2.cvtColor(bot_bar, cv2.COLOR_BGR2GRAY)
+            bot_dark = float(np.mean(bot_gray < 30))
+            if dark_ratio > 0.65 and bright_ratio > 0.01 and bot_dark > 0.60:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def ensure_not_in_pause_menu(self):
+        """If game is in Pause Menu/Settings, press Esc to exit back to game."""
+        bg = self.capture_background(self.hwnd)
+        if bg is not None and self.is_pause_menu_open(bg):
+            self.log_signal.emit("[ระบบความปลอดภัย] ตรวจพบหน้า Pause Menu/การตั้งค่า กำลังกด Esc เพื่อกลับเข้าเกม...")
+            send_key_direct("esc", duration=0.15)
+            time.sleep(0.8)
+            return True
+        return False
+
     def hold_game_key(self, key_name, duration):
         """Hold a key with focus checks and always release it."""
         if self.activate_game_window() is None:
             return False
+        if key_name.lower() == "e":
+            self.ensure_not_in_pause_menu()
         press_key_hold(key_name)
         try:
             end_at = time.time() + duration
@@ -1463,12 +1496,14 @@ class MacroWorker(QThread):
         if orig_pos is None:
             self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
             return False
-        if not self.send_game_key("esc"):
+        # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
+        if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
+            self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
             return False
-        time.sleep(1.0)
+        time.sleep(0.5)
         if not self.send_game_key("x"):
             return False
-        time.sleep(1.0)
+        time.sleep(0.8)
         if need_water:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
             if not self.send_game_key("6"):
@@ -1479,6 +1514,7 @@ class MacroWorker(QThread):
             if not self.send_game_key("7"):
                 return False
             time.sleep(8.0)
+        self.ensure_not_in_pause_menu()
         self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
         if not self.hold_game_key("e", 1.5):
             return False
@@ -1731,13 +1767,14 @@ class MacroWorker(QThread):
                                 stored_successfully = True
         if not stored_successfully:
             self.log_signal.emit(
-                "[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน "
-                "จึงยังไม่ได้เก็บเข้ารถ"
+                "[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ"
             )
         if trunk_opened:
-            if not self.send_game_key("esc"):
-                return False
-            time.sleep(1.0)
+            # ปิดหน้าต่างท้ายรถ/กระเป๋าอย่างปลอดภัย (ไม่กด Esc เปล่าๆ เพื่อไม่ให้เปิด Pause Menu)
+            self.ensure_inventory_closed("[ระบบเก็บเพชร]")
+            time.sleep(0.5)
+            self.ensure_not_in_pause_menu()
+        self.ensure_not_in_pause_menu()
         if not self.hold_game_key("e", 1.5):
             return False
         time.sleep(1.5)
