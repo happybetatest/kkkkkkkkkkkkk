@@ -12,6 +12,7 @@ import win32gui
 import win32ui
 import win32con
 import win32api
+import win32process
 import keyboard
 
 try:
@@ -1082,7 +1083,7 @@ class MacroWorker(QThread):
                     # If it arrived late while a GTA menu was open it could
                     # contribute to unintended Rockstar Editor navigation.
                     foreground = win32gui.GetForegroundWindow()
-                    foreground_thread = win32api.GetWindowThreadProcessId(
+                    foreground_thread = win32process.GetWindowThreadProcessId(
                         foreground
                     )[0] if foreground else 0
                     current_thread = win32api.GetCurrentThreadId()
