@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QSlider, QTextEdit, QFrame, QGridLayout, 
     QGroupBox, QSystemTrayIcon, QMenu, QCheckBox, QTabWidget, QScrollArea,
-    QComboBox, QLineEdit
+    QComboBox, QLineEdit, QMessageBox, QProgressBar
 )
 from PySide6.QtGui import (
     QIcon, QAction, QColor, QFont, QPainter, QPen, QPixmap, QImage, QPalette
@@ -56,6 +56,79 @@ def get_writable_path(filename):
     else:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
+
+CURRENT_APP_VERSION = "1.2.6"
+
+def get_current_version():
+    try:
+        v_path = get_writable_path("version.json")
+        if os.path.isfile(v_path):
+            with open(v_path, "r", encoding="utf-8") as f:
+                return json.load(f).get("version", CURRENT_APP_VERSION)
+    except Exception:
+        pass
+    return CURRENT_APP_VERSION
+
+def parse_ver(v_str):
+    import re
+    nums = re.findall(r'\d+', str(v_str))
+    return tuple(map(int, nums)) if nums else (0, 0, 0)
+
+class RealtimeUpdateWorker(QThread):
+    check_finished = Signal(bool, str, str)  # has_update, remote_version, error_msg
+    download_finished = Signal(bool, str)    # success, message
+
+    def __init__(self, mode="check"):
+        super().__init__()
+        self.mode = mode
+
+    def run(self):
+        if self.mode == "check":
+            self.do_check()
+        elif self.mode == "download":
+            self.do_download()
+
+    def do_check(self):
+        try:
+            url = f"https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/version.json?t={int(time.time())}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req, timeout=6, context=HTTPS_CONTEXT) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                remote_ver = str(data.get("version", "")).strip()
+                cur_ver = get_current_version()
+                has_update = parse_ver(remote_ver) > parse_ver(cur_ver)
+                self.check_finished.emit(has_update, remote_ver, "")
+        except Exception as e:
+            self.check_finished.emit(False, "", str(e))
+
+    def do_download(self):
+        try:
+            files_to_sync = [
+                ("gui_macro.py", "https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/gui_macro.py"),
+                ("keyauth_helper.py", "https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/keyauth_helper.py"),
+                ("version.json", "https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/version.json")
+            ]
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            for filename, raw_url in files_to_sync:
+                raw_url_timed = f"{raw_url}?t={int(time.time())}"
+                req = urllib.request.Request(raw_url_timed, headers={"User-Agent": "Mozilla/5.0", "Cache-Control": "no-cache"})
+                with urllib.request.urlopen(req, timeout=10, context=HTTPS_CONTEXT) as resp:
+                    content = resp.read()
+
+                target_path = os.path.join(app_dir, filename)
+                with open(target_path, "wb") as f:
+                    f.write(content)
+
+                template_app_path = os.path.join(app_dir, "templates", "_app", filename)
+                if os.path.exists(os.path.dirname(template_app_path)):
+                    try:
+                        with open(template_app_path, "wb") as f:
+                            f.write(content)
+                    except Exception:
+                        pass
+            self.download_finished.emit(True, "อัปเดตไฟล์สำเร็จเรียบร้อย กำลังเริ่มระบบใหม่...")
+        except Exception as e:
+            self.download_finished.emit(False, f"เกิดข้อผิดพลาดในการดาวน์โหลด: {e}")
 
 def apply_fixed_light_theme(app):
     """Keep the app colors independent from the Windows light/dark setting."""
@@ -2380,6 +2453,11 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout()
         title_label = QLabel("มาโครทิ้งทอง FiveM Background")
         title_label.setObjectName("Title")
+
+        self.update_btn = QPushButton(f"🔄 เช็คอัปเดต (v{get_current_version()})")
+        self.update_btn.setStyleSheet("QPushButton { background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 12px; color: #334155; font-size: 11px; font-weight: bold; padding: 4px 10px; } QPushButton:hover { background-color: #e2e8f0; color: #0f172a; }")
+        self.update_btn.clicked.connect(self.check_update_manually)
+
         self.status_bar = QFrame()
         self.status_bar.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 4px 12px; }")
         status_bar_layout = QHBoxLayout(self.status_bar)
@@ -2391,6 +2469,7 @@ class MainWindow(QMainWindow):
         status_bar_layout.addWidget(self.status_text)
         header_layout.addWidget(title_label)
         header_layout.addStretch()
+        header_layout.addWidget(self.update_btn)
         header_layout.addWidget(self.status_bar)
         main_layout.addLayout(header_layout)
 
@@ -2701,6 +2780,7 @@ class MainWindow(QMainWindow):
             trigger_on_release=True
         )
         self.write_log("ยินดีต้อนรับสู่แผงควบคุมระบบฟาร์มทิ้งทองอัตโนมัติ (Background)")
+        self.setup_realtime_updater()
 
     def sync_worker_config(self):
         for k, v in self.thresholds.items(): self.worker.set_config(k, "threshold", v)
@@ -3194,6 +3274,87 @@ class MainWindow(QMainWindow):
         self.discord_webhook_url = self.webhook_input.text().strip()
         self.worker.set_config("webhook", "diamond", self.discord_webhook_url)
         self.save_private_settings()
+
+    def setup_realtime_updater(self):
+        QTimer.singleShot(5000, self.check_update_silently)
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.check_update_silently)
+        self.update_timer.start(15 * 60 * 1000)
+
+    def check_update_silently(self):
+        self.silent_update_worker = RealtimeUpdateWorker(mode="check")
+        self.silent_update_worker.check_finished.connect(
+            lambda has_up, rem_v, err: self.on_update_checked(has_up, rem_v, err, interactive=False)
+        )
+        self.silent_update_worker.start()
+
+    def check_update_manually(self):
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("🔄 กำลังตรวจ...")
+        self.manual_update_worker = RealtimeUpdateWorker(mode="check")
+        self.manual_update_worker.check_finished.connect(
+            lambda has_up, rem_v, err: self.on_update_checked(has_up, rem_v, err, interactive=True)
+        )
+        self.manual_update_worker.start()
+
+    def on_update_checked(self, has_update, remote_version, error_msg, interactive=False):
+        cur_v = get_current_version()
+        self.update_btn.setEnabled(True)
+        self.update_btn.setText(f"🔄 เช็คอัปเดต (v{cur_v})")
+        if has_update:
+            reply = QMessageBox.question(
+                self,
+                "อัปเดต FiveM Farming",
+                f"🎉 พบเวอร์ชันใหม่: v{remote_version}\n(เวอร์ชันปัจจุบัน: v{cur_v})\n\nต้องการดาวน์โหลดและเริ่มระบบใหม่ทันทีหรือไม่?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.perform_hot_update()
+        else:
+            if interactive:
+                if error_msg:
+                    QMessageBox.warning(self, "ตรวจสอบอัปเดต", f"ไม่สามารถตรวจสอบอัปเดตได้: {error_msg}")
+                else:
+                    QMessageBox.information(self, "ตรวจสอบอัปเดต", f"✅ คุณกำลังใช้งานเวอร์ชันล่าสุด (v{cur_v}) อยู่แล้วครับ")
+
+    def perform_hot_update(self):
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("⏳ กำลังดาวน์โหลด...")
+        self.write_log("[ระบบอัปเดต] กำลังดาวน์โหลดเวอร์ชันล่าสุดจาก GitHub...")
+        if hasattr(self, 'worker') and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(500)
+        self.downloader_worker = RealtimeUpdateWorker(mode="download")
+        self.downloader_worker.download_finished.connect(self.on_hot_update_finished)
+        self.downloader_worker.start()
+
+    def on_hot_update_finished(self, success, message):
+        if success:
+            self.write_log("[ระบบอัปเดต] ดาวน์โหลดสำเร็จ กำลังเริ่มระบบใหม่...")
+            QMessageBox.information(self, "อัปเดตสำเร็จ", "🎉 อัปเดตเวอร์ชันใหม่สำเร็จแล้ว!\nโปรแกรมจะเริ่มทำงานใหม่ในทันทีครับ")
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            pythonw = os.path.join(app_dir, "templates", "_runtime", "pythonw.exe")
+            macro_py = os.path.join(app_dir, "gui_macro.py")
+            if os.path.isfile(pythonw) and os.path.isfile(macro_py):
+                child_env = os.environ.copy()
+                child_env["FIVEM_CAPTURE_BITBLT"] = "1"
+                subprocess.Popen(
+                    [pythonw, macro_py],
+                    cwd=app_dir,
+                    env=child_env,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+            else:
+                subprocess.Popen([sys.executable, sys.argv[0]], cwd=app_dir)
+            QApplication.quit()
+            sys.exit(0)
+        else:
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText(f"🔄 เช็คอัปเดต (v{get_current_version()})")
+            QMessageBox.critical(self, "อัปเดตไม่สำเร็จ", message)
+
+
 
 def check_license_or_prompt():
     """Verify saved KeyAuth license or prompt user to enter key before running."""
