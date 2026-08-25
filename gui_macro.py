@@ -57,7 +57,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.2.7"
+CURRENT_APP_VERSION = "1.2.8"
 
 def get_current_version():
     try:
@@ -427,9 +427,9 @@ class MacroWorker(QThread):
         self.focus_failure_streak = 0
         self.last_runtime_error = ""
         self.last_runtime_error_time = 0.0
-        self.last_hud_check_time = 0.0
-        self.last_feeding_attempt_time = now
-        self.last_diamond_check_time = now
+        self.last_hud_check_time = now + 10.0
+        self.last_feeding_attempt_time = now + 10.0
+        self.last_diamond_check_time = now + 10.0
 
         # A reconnect may show a different game session. Cancel only transient
         # gold UI/count state so the first round safely re-syncs at 30/40.
@@ -582,6 +582,14 @@ class MacroWorker(QThread):
                 f"{type(error).__name__}: {error}"
             )
             return False
+
+    def safe_sleep(self, duration):
+        """Sleep in small intervals so thread stops immediately when paused or exiting."""
+        end_time = time.time() + duration
+        while time.time() < end_time:
+            if self.is_exiting or not self.is_running:
+                break
+            time.sleep(min(0.1, max(0.01, end_time - time.time())))
 
     def get_client_geometry(self, hwnd=None):
         """Return the game client origin on screen and its pixel size."""
@@ -1553,6 +1561,12 @@ class MacroWorker(QThread):
             y_start, y_end = max(0, min(hy, h_img)), max(0, min(hy + hh, h_img))
             if (x_end - x_start) < 10 or (y_end - y_start) < 10: return
             hud_crop = bg_img[y_start:y_end, x_start:x_end]
+            
+            # Check if screen/HUD region is dark/loading screen
+            if float(np.std(hud_crop)) < 8.0 or float(np.mean(hud_crop)) < 12.0:
+                self.hud_preview_signal.emit(hud_crop, np.zeros_like(hud_crop), -1, -1)
+                return
+
             hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
             lower_pink, upper_pink = np.array([130, 45, 70]), np.array([170, 255, 255])
             mask = cv2.inRange(hsv, lower_pink, upper_pink)
@@ -1576,25 +1590,29 @@ class MacroWorker(QThread):
         if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
             self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
             return False
-        time.sleep(0.5)
+        self.safe_sleep(0.5)
+        if not self.is_running or self.is_exiting: return False
         if not self.send_game_key("x"):
             return False
-        time.sleep(0.8)
+        self.safe_sleep(0.8)
+        if not self.is_running or self.is_exiting: return False
         if need_water:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
             if not self.send_game_key("6"):
                 return False
-            time.sleep(8.0)
+            self.safe_sleep(8.0)
+            if not self.is_running or self.is_exiting: return False
         if need_food:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
             if not self.send_game_key("7"):
                 return False
-            time.sleep(8.0)
+            self.safe_sleep(8.0)
+            if not self.is_running or self.is_exiting: return False
         self.ensure_not_in_pause_menu()
         self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
         if not self.hold_game_key("e", 1.5):
             return False
-        time.sleep(1.5)
+        self.safe_sleep(1.5)
         bg_after = self.capture_background(self.hwnd)
         if bg_after is not None:
             h_img, w_img, _ = bg_after.shape
@@ -1614,11 +1632,11 @@ class MacroWorker(QThread):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(2.0)
+                self.safe_sleep(2.0)
         self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
         if not self.send_game_key("t"):
             return False
-        time.sleep(1.0)
+        self.safe_sleep(1.0)
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
             except: pass
@@ -1636,15 +1654,26 @@ class MacroWorker(QThread):
         y_start, y_end = max(0, min(hy, h_img)), max(0, min(hy + hh, h_img))
         if x_end - x_start < 10 or y_end - y_start < 10: return
         hud_crop = bg_img[y_start:y_end, x_start:x_end]
+        
+        # ป้องกันสั่งกินอาหารตอนจอเกมยังโหลดไม่เสร็จหรือจอดำ
+        if float(np.std(hud_crop)) < 8.0 or float(np.mean(hud_crop)) < 12.0:
+            return
+
         hsv = cv2.cvtColor(hud_crop, cv2.COLOR_BGR2HSV)
         lower_pink, upper_pink = np.array([130, 45, 70]), np.array([170, 255, 255])
         mask = cv2.inRange(hsv, lower_pink, upper_pink)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         crop_w = mask.shape[1]
-        hunger_px = np.sum(mask[:, :crop_w//2] > 0)
-        thirst_px = np.sum(mask[:, crop_w//2:] > 0)
-        need_food, need_water = hunger_px < self.hunger_limit, thirst_px < self.thirst_limit
+        hunger_px = int(np.sum(mask[:, :crop_w//2] > 0))
+        thirst_px = int(np.sum(mask[:, crop_w//2:] > 0))
+        
+        # ถ้าทั้ง 2 ค่าเป็น 0 พอดี ให้ข้ามไปก่อน (HUD อาจยังไม่โผล่ในเกม)
+        if hunger_px == 0 and thirst_px == 0:
+            return
+
+        need_food = hunger_px < self.hunger_limit
+        need_water = thirst_px < self.thirst_limit
         if need_food or need_water:
             now = time.time()
             if now - self.last_feeding_attempt_time < 60.0:
@@ -2851,6 +2880,11 @@ class MainWindow(QMainWindow):
     @Slot(np.ndarray, np.ndarray, int, int)
     def update_hud_preview(self, crop, mask, hunger_px, thirst_px):
         try:
+            if hunger_px < 0 or thirst_px < 0:
+                self.lbl_hud_hunger.setText("หลอดอาหาร: รอโหลดเกม...")
+                self.lbl_hud_thirst.setText("หลอดน้ำ: รอโหลดเกม...")
+                self.lbl_hud_status.setText("สถานะ: ⏳ กำลังรอโหลด HUD ในเกม...")
+                return
             h, w, c = crop.shape
             self.lbl_crop.setPixmap(QPixmap.fromImage(QImage(crop.tobytes(), w, h, c*w, QImage.Format_BGR888)).scaled(self.lbl_crop.width(), self.lbl_crop.height(), Qt.KeepAspectRatio))
             mh, mw, mc = mask.shape
