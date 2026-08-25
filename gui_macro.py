@@ -63,7 +63,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.1"
+CURRENT_APP_VERSION = "1.3.2"
 
 def get_current_version():
     try:
@@ -3464,7 +3464,7 @@ class MainWindow(QMainWindow):
     def restart_discord_bot(self):
         self.on_discord_remote_edited()
         if not self.discord_remote:
-            self.discord_status_lbl.setText("สถานะ: ❌ ไม่พบไลบรารี discord.py")
+            self.discord_status_lbl.setText("สถานะ: ❌ ระบบบอทไม่พร้อม")
             return
         self.discord_status_lbl.setText("สถานะ: 🟡 กำลังเชื่อมต่อ...")
         self.discord_remote.stop_bot()
