@@ -63,7 +63,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.0"
+CURRENT_APP_VERSION = "1.3.1"
 
 def get_current_version():
     try:
@@ -1217,40 +1217,26 @@ class MacroWorker(QThread):
         """Send a hardware key only while FiveM is the foreground window."""
         if require_focus and self.activate_game_window() is None:
             return False
-        return send_key_hardware(key_name, duration=duration)
+        send_key_direct(key_name, duration=duration)
+        return True
 
     def is_pause_menu_open(self, bg_img=None):
         """Detect the full-screen GTA V Pause Menu."""
-        if bg_img is None:
-            bg_img = self.capture_background(self.hwnd)
-        if bg_img is None:
-            return False
-        h_img, w_img = bg_img.shape[:2]
-        header_crop = bg_img[0:int(h_img * 0.15), 0:int(w_img * 0.60)]
-        header_gray = cv2.cvtColor(header_crop, cv2.COLOR_BGR2GRAY)
-        bright_mask = cv2.inRange(header_gray, 200, 255)
-        bright_ratio = cv2.countNonZero(bright_mask) / float(bright_mask.size)
-        return bright_ratio > 0.08
+        return False
 
     def ensure_not_in_pause_menu(self):
-        """Press Esc if currently stuck in GTA V Pause Menu."""
-        for _ in range(3):
-            bg = self.capture_background(self.hwnd)
-            if bg is None or not self.is_pause_menu_open(bg):
-                return True
-            self.log_signal.emit("[ระบบป้องกัน] พบหน้า Pause Menu กำลังกด Esc เพื่อกลับสู่เกม...")
-            if self.activate_game_window() is not None:
-                self.send_game_key("esc")
-                time.sleep(0.8)
-        return False
+        return True
 
     def hold_game_key(self, key_name, duration=1.0, require_focus=True):
         """Hold a hardware key only while FiveM is the foreground window."""
-        self.ensure_not_in_pause_menu()
         if require_focus and self.activate_game_window() is None:
             return False
-        self.ensure_not_in_pause_menu()
-        return hold_key_hardware(key_name, duration=duration)
+        press_key_hold(key_name)
+        try:
+            time.sleep(duration)
+            return True
+        finally:
+            release_key_hold(key_name)
 
     def update_character_idle_state(self, bg_img):
         """Open the inventory after a genuinely static gameplay interval."""
@@ -1263,8 +1249,6 @@ class MacroWorker(QThread):
             return False
         self.last_activity_sample_time = now
         h_img, w_img = bg_img.shape[:2]
-        # Ignore screen edges/HUD and use a tiny grayscale sample so harmless
-        # capture noise does not look like character movement.
         crop = bg_img[int(h_img * .18):int(h_img * .82), int(w_img * .20):int(w_img * .80)]
         frame = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (96, 54))
         if self.last_activity_frame is None:
@@ -1291,52 +1275,10 @@ class MacroWorker(QThread):
         return True
 
     def is_rockstar_confirmation(self, bg_img):
-        """Detect the in-game 'Sure you want to open Rockstar Editor?' prompt."""
-        if bg_img is None:
-            return False
-        h_img, w_img = bg_img.shape[:2]
-        crop_h = max(20, int(h_img * 0.40))
-        crop_w = max(20, int(w_img * 0.60))
-        y0 = (h_img - crop_h) // 2
-        x0 = (w_img - crop_w) // 2
-        box = bg_img[y0:y0 + crop_h, x0:x0 + crop_w]
-        gray = cv2.cvtColor(box, cv2.COLOR_BGR2GRAY)
-        dark_ratio = float(np.count_nonzero(gray < 40)) / float(gray.size)
-        if dark_ratio < 0.35:
-            return False
-        bright_ratio = float(np.count_nonzero(gray > 215)) / float(gray.size)
-        return bright_ratio > 0.004
+        return False
 
     def recover_from_rockstar_confirmation(self, bg_img):
-        """Escape cleanly out of the Rockstar Editor prompt without getting stuck."""
-        if not self.is_rockstar_confirmation(bg_img):
-            return False
-        now = time.time()
-        if now - self.last_rockstar_escape_time < 1.5:
-            return True
-        self.last_rockstar_escape_time = now
-        self.log_signal.emit(
-            "[ระบบป้องกัน Rockstar] พบหน้าต่างยืนยัน กำลังกด Esc เพื่อเลือก No"
-        )
-        self.send_bug_webhook(
-            "เข้า Rockstar Editor",
-            "ตรวจพบหน้าต่าง No / Esc / Yes / Enter และกำลังออกอัตโนมัติ",
-            alert_key="rockstar_editor",
-            cooldown_seconds=120.0,
-        )
-        if not self.send_game_key("esc"):
-            return True
-        time.sleep(0.8)
-        # When inventory is layered above the Rockstar prompt, the first Esc
-        # closes only the inventory.  Confirm on a fresh frame and send one
-        # more Esc solely while the Rockstar prompt is still visible.
-        fresh = self.capture_background(self.hwnd)
-        if fresh is not None and self.is_rockstar_confirmation(fresh):
-            self.send_game_key("esc")
-            time.sleep(0.8)
-        if self.idle_inventory_recovery:
-            self.ensure_inventory_open("[ระบบทอง]")
-        return True
+        return False
 
     def resume_farming_after_inventory(self):
         """Close the bag, enter the job interaction and click Auto Farm."""
