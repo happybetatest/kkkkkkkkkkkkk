@@ -42,7 +42,7 @@ except Exception:
     except Exception:
         pass
 
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QPoint, QRect
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot, QTimer, QPoint, QRect
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QSlider, QTextEdit, QFrame, QGridLayout, 
@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.4"
+CURRENT_APP_VERSION = "1.3.5"
 
 def get_current_version():
     try:
