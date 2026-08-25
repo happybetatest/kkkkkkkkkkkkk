@@ -5,3 +5,4 @@ numpy
 opencv-python
 pywin32
 pyinstaller
+aiohttp
