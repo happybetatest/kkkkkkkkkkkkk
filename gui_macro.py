@@ -63,7 +63,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.2"
+CURRENT_APP_VERSION = "1.3.3"
 
 def get_current_version():
     try:
@@ -2499,7 +2499,19 @@ class MainWindow(QMainWindow):
         self.load_config()
         self.load_private_settings()
         self.setWindowTitle("ระบบมาโครทิ้งทองอัตโนมัติ (Background)")
-        self.resize(760, 580)
+        self.setMinimumSize(480, 360)
+        if self.saved_geometry and len(self.saved_geometry) == 4:
+            gx, gy, gw, gh = self.saved_geometry
+            self.resize(max(480, gw), max(360, gh))
+            self.move(gx, gy)
+        else:
+            self.resize(680, 520)
+            screen = QApplication.primaryScreen()
+            if screen:
+                geo = screen.availableGeometry()
+                target_x = max(geo.left(), geo.right() - 700)
+                target_y = geo.top() + 30
+                self.move(target_x, target_y)
         self.setStyleSheet("""
             QMainWindow { background-color: #f8fafc; }
             QWidget { color: #334155; font-family: 'Segoe UI', sans-serif; }
@@ -2580,7 +2592,16 @@ class MainWindow(QMainWindow):
         # Tab 1: Configuration
         tab_config = QWidget()
         tab_config.setObjectName("ConfigTab")
-        config_tab_layout = QVBoxLayout(tab_config)
+        config_tab_main_layout = QVBoxLayout(tab_config)
+        config_tab_main_layout.setContentsMargins(0, 0, 0, 0)
+
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setObjectName("ConfigScrollArea")
+        config_scroll_content = QWidget()
+        config_scroll_content.setObjectName("ConfigScrollContent")
+        config_tab_layout = QVBoxLayout(config_scroll_content)
+        config_tab_layout.setContentsMargins(8, 8, 8, 8)
         config_tab_layout.setSpacing(8)
         
         setup_box = QGroupBox("ตั้งค่าขอบเขตพิกัดหน้าต่างเกม")
@@ -2705,6 +2726,9 @@ class MainWindow(QMainWindow):
         remote_layout.addWidget(self.discord_admin_input)
         remote_layout.addLayout(remote_status_layout)
         config_tab_layout.addWidget(remote_box)
+
+        config_scroll.setWidget(config_scroll_content)
+        config_tab_main_layout.addWidget(config_scroll)
 
         # Tab 2: Custom Crops
         tab_crops = QWidget()
@@ -3046,6 +3070,7 @@ class MainWindow(QMainWindow):
         keyboard.unhook_all_hotkeys()
         if self.discord_remote:
             self.discord_remote.stop_bot()
+        self.save_config()
         self.worker.stop()
         event.accept()
 
@@ -3128,6 +3153,7 @@ class MainWindow(QMainWindow):
                     self.diamond_interval_minutes = 40
                     self.reference_resolution = data.get("reference_resolution", None)
                     self.template_reference_sizes = data.get("template_reference_sizes", {})
+                    self.saved_geometry = data.get("window_geometry", None)
             except Exception: pass
 
     def save_config(self):
@@ -3150,7 +3176,8 @@ class MainWindow(QMainWindow):
                 "diamond_mode": self.diamond_mode,
                 "diamond_interval_minutes": self.diamond_interval_minutes,
                 "reference_resolution": self.reference_resolution,
-                "template_reference_sizes": self.template_reference_sizes
+                "template_reference_sizes": self.template_reference_sizes,
+                "window_geometry": [self.x(), self.y(), self.width(), self.height()]
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
