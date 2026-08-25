@@ -16,6 +16,12 @@ import win32process
 import keyboard
 
 try:
+    from discord_remote import DiscordRemoteWorker, DISCORD_AVAILABLE
+except ImportError:
+    DISCORD_AVAILABLE = False
+    DiscordRemoteWorker = None
+
+try:
     import certifi
     HTTPS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 except Exception:
@@ -57,7 +63,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.2.9"
+CURRENT_APP_VERSION = "1.3.0"
 
 def get_current_version():
     try:
@@ -106,6 +112,7 @@ class RealtimeUpdateWorker(QThread):
             files_to_sync = [
                 ("gui_macro.py", "https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/gui_macro.py"),
                 ("keyauth_helper.py", "https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/keyauth_helper.py"),
+                ("discord_remote.py", "https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/discord_remote.py"),
                 ("version.json", "https://raw.githubusercontent.com/happybetatest/kkkkkkkkkkkkk/main/version.json")
             ]
             app_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2048,6 +2055,144 @@ class MacroWorker(QThread):
                 val, False, "โหมดไม่มีรถ: รอเพชรเต็ม 40/40"
             )
 
+    def execute_remote_check_bag(self):
+        """Open inventory, capture screen and return gold/diamond status."""
+        try:
+            orig_pos = self.activate_game_window()
+            if orig_pos is None:
+                return {
+                    "success": False,
+                    "status_info": "ไม่สามารถโฟกัส FiveM ได้",
+                    "gold_info": "ไม่ทราบ",
+                }
+
+            if not self.is_inventory_open():
+                self.ensure_inventory_open("[Discord Remote]")
+                time.sleep(0.8)
+
+            bg_img = self.capture_background(self.hwnd)
+            if bg_img is None:
+                return {
+                    "success": False,
+                    "status_info": "จับภาพ FiveM ไม่สำเร็จ",
+                    "gold_info": "ไม่ทราบ",
+                }
+
+            gold_info = f"เป้าหมายทิ้ง: {self.gold_discard_target}/40 (ประเมินทองปัจจุบัน: {self.gold_estimated_count})"
+            status_info = "🟢 กำลังฟาร์ม" if self.is_running else "🔴 หยุดพัก"
+
+            temp_path = get_writable_path("discord_bag_capture.png")
+            cv2.imwrite(temp_path, bg_img)
+
+            if orig_pos:
+                try:
+                    win32api.SetCursorPos(orig_pos)
+                except Exception:
+                    pass
+
+            return {
+                "success": True,
+                "image_path": temp_path,
+                "gold_info": gold_info,
+                "status_info": status_info,
+            }
+        except Exception as error:
+            return {
+                "success": False,
+                "status_info": f"ข้อผิดพลาด: {error}",
+                "gold_info": "ผิดพลาด",
+            }
+
+    def execute_remote_discard_gold(self):
+        """Open inventory, click All and Confirm to discard gold, then resume farming."""
+        try:
+            orig_pos = self.activate_game_window()
+            if orig_pos is None:
+                return {"success": False, "message": "ไม่สามารถโฟกัส FiveM ได้"}
+
+            if not self.is_inventory_open():
+                self.ensure_inventory_open("[Discord Remote]")
+                time.sleep(0.8)
+
+            bg_img = self.capture_background(self.hwnd)
+            if bg_img is None:
+                return {"success": False, "message": "จับภาพ FiveM ไม่สำเร็จ"}
+
+            h_img, w_img, _ = bg_img.shape
+            all_x, all_y = self.get_region_ranges(
+                self.all_search_region, w_img, h_img, (0.35, 0.65), (0.35, 0.75)
+            )
+            all_result = self.find_image(
+                bg_img,
+                TEMPLATES["all"],
+                self.thresholds["all"],
+                x_range=all_x,
+                y_range=all_y,
+            )
+            if all_result and all_result[0] is not None:
+                x_all, y_all, _ = all_result
+                self.bg_click(self.hwnd, x_all, y_all)
+                time.sleep(0.8)
+
+                bg_conf = self.capture_background(self.hwnd)
+                if bg_conf is not None:
+                    conf_x, conf_y = self.get_region_ranges(
+                        self.confirm_search_region,
+                        w_img,
+                        h_img,
+                        (0.35, 0.65),
+                        (0.35, 0.75),
+                    )
+                    conf_res = self.find_image(
+                        bg_conf,
+                        TEMPLATES["confirm"],
+                        self.thresholds["confirm"],
+                        x_range=conf_x,
+                        y_range=conf_y,
+                    )
+                    if conf_res and conf_res[0] is not None:
+                        x_c, y_c, _ = conf_res
+                        self.bg_click(self.hwnd, x_c, y_c)
+                        time.sleep(self.delays["confirm"])
+
+            self.choose_next_gold_target()
+            time.sleep(1.0)
+            self.resume_farming_after_inventory()
+
+            bg_after = self.capture_background(self.hwnd)
+            temp_path = get_writable_path("discord_discard_result.png")
+            if bg_after is not None:
+                cv2.imwrite(temp_path, bg_after)
+
+            if orig_pos:
+                try:
+                    win32api.SetCursorPos(orig_pos)
+                except Exception:
+                    pass
+
+            return {
+                "success": True,
+                "message": (
+                    f"ทิ้งทองสำเร็จและเริ่มฟาร์มต่อเรียบร้อย! "
+                    f"(เป้าหมายรอบใหม่: {self.gold_discard_target}/40)"
+                ),
+                "image_path": temp_path if os.path.isfile(temp_path) else None,
+            }
+        except Exception as error:
+            return {"success": False, "message": f"เกิดข้อผิดพลาด: {error}"}
+
+    def execute_remote_screenshot(self):
+        """Capture and return the current FiveM screen image path."""
+        try:
+            bg_img = self.capture_background(self.hwnd)
+            if bg_img is None:
+                return {"success": False, "image_path": None}
+            temp_path = get_writable_path("discord_screen_capture.png")
+            cv2.imwrite(temp_path, bg_img)
+            return {"success": True, "image_path": temp_path}
+        except Exception:
+            return {"success": False, "image_path": None}
+
     def run(self):
         while not self.is_exiting:
             try:
@@ -2582,6 +2727,43 @@ class MainWindow(QMainWindow):
         toggle_layout.addWidget(self.webhook_input)
         config_tab_layout.addWidget(toggle_box)
 
+        # Discord Remote Control Settings Group
+        remote_box = QGroupBox("🎮 สั่งการระยะไกลผ่าน Discord (Discord Remote)")
+        remote_box.setObjectName("ConfigGroup")
+        remote_layout = QVBoxLayout(remote_box)
+        remote_layout.setSpacing(6)
+
+        self.discord_remote_cb = QCheckBox("เปิดใช้งานบอท Discord สั่งการระยะไกล")
+        self.discord_remote_cb.setChecked(self.discord_remote_enabled)
+        self.discord_remote_cb.stateChanged.connect(self.on_discord_remote_toggled)
+
+        self.discord_token_input = QLineEdit()
+        self.discord_token_input.setEchoMode(QLineEdit.Password)
+        self.discord_token_input.setPlaceholderText("Discord Bot Token (สร้างจาก Developer Portal)")
+        self.discord_token_input.setText(self.discord_bot_token)
+        self.discord_token_input.editingFinished.connect(self.on_discord_remote_edited)
+
+        self.discord_admin_input = QLineEdit()
+        self.discord_admin_input.setPlaceholderText("Discord User ID เจ้าของ (เช่น 123456789012345678)")
+        self.discord_admin_input.setText(self.discord_admin_id)
+        self.discord_admin_input.editingFinished.connect(self.on_discord_remote_edited)
+
+        remote_status_layout = QHBoxLayout()
+        self.discord_status_lbl = QLabel("สถานะ: 🔴 ออฟไลน์")
+        self.discord_status_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
+        self.discord_connect_btn = QPushButton("🔄 เชื่อมต่อใหม่")
+        self.discord_connect_btn.setStyleSheet("QPushButton { font-size: 11px; padding: 3px 8px; }")
+        self.discord_connect_btn.clicked.connect(self.restart_discord_bot)
+        remote_status_layout.addWidget(self.discord_status_lbl)
+        remote_status_layout.addStretch()
+        remote_status_layout.addWidget(self.discord_connect_btn)
+
+        remote_layout.addWidget(self.discord_remote_cb)
+        remote_layout.addWidget(self.discord_token_input)
+        remote_layout.addWidget(self.discord_admin_input)
+        remote_layout.addLayout(remote_status_layout)
+        config_tab_layout.addWidget(remote_box)
+
         # Tab 2: Custom Crops
         tab_crops = QWidget()
         tab_crops.setObjectName("CropsTab")
@@ -2791,6 +2973,15 @@ class MainWindow(QMainWindow):
         self.write_log("ยินดีต้อนรับสู่แผงควบคุมระบบฟาร์มทิ้งทองอัตโนมัติ (Background)")
         self.setup_realtime_updater()
 
+        self.discord_remote = DiscordRemoteWorker() if DiscordRemoteWorker else None
+        if self.discord_remote:
+            self.discord_remote.status_signal.connect(self.on_discord_remote_status)
+            self.discord_remote.log_signal.connect(self.write_log)
+            self.discord_remote.action_requested.connect(self.on_discord_remote_action)
+            self.discord_remote.configure(self.discord_bot_token, self.discord_admin_id, self.discord_remote_enabled)
+            if self.discord_remote_enabled and self.discord_bot_token:
+                self.discord_remote.start_bot()
+
     def sync_worker_config(self):
         for k, v in self.thresholds.items(): self.worker.set_config(k, "threshold", v)
         for k, v in self.delays.items(): self.worker.set_config(k, "delay", v)
@@ -2911,6 +3102,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         keyboard.unhook_all_hotkeys()
+        if self.discord_remote:
+            self.discord_remote.stop_bot()
         self.worker.stop()
         event.accept()
 
@@ -2958,6 +3151,9 @@ class MainWindow(QMainWindow):
         self.diamond_mode = "car_timer"
         self.diamond_interval_minutes = 40
         self.discord_webhook_url = ""
+        self.discord_bot_token = ""
+        self.discord_admin_id = ""
+        self.discord_remote_enabled = False
         self.reference_resolution = None
         self.template_reference_sizes = {}
         if os.path.exists(self.config_path):
@@ -3030,8 +3226,14 @@ class MainWindow(QMainWindow):
                     private_data.get("diamond_mode", self.diamond_mode)
                 )
                 self.diamond_interval_minutes = 40
+                self.discord_bot_token = str(private_data.get("discord_bot_token", "")).strip()
+                self.discord_admin_id = str(private_data.get("discord_admin_id", "")).strip()
+                self.discord_remote_enabled = bool(private_data.get("discord_remote_enabled", False))
         except Exception:
             self.discord_webhook_url = ""
+            self.discord_bot_token = ""
+            self.discord_admin_id = ""
+            self.discord_remote_enabled = False
 
     def save_private_settings(self):
         try:
@@ -3041,6 +3243,9 @@ class MainWindow(QMainWindow):
                         "discord_webhook_url": self.discord_webhook_url,
                         "diamond_mode": self.diamond_mode,
                         "diamond_interval_minutes": self.diamond_interval_minutes,
+                        "discord_bot_token": self.discord_bot_token,
+                        "discord_admin_id": self.discord_admin_id,
+                        "discord_remote_enabled": self.discord_remote_enabled,
                     },
                     stream, indent=2, ensure_ascii=False
                 )
@@ -3288,6 +3493,119 @@ class MainWindow(QMainWindow):
         self.discord_webhook_url = self.webhook_input.text().strip()
         self.worker.set_config("webhook", "diamond", self.discord_webhook_url)
         self.save_private_settings()
+
+    def on_discord_remote_toggled(self, state):
+        self.discord_remote_enabled = bool(state)
+        self.save_private_settings()
+        if self.discord_remote:
+            self.discord_remote.configure(
+                self.discord_bot_token,
+                self.discord_admin_id,
+                self.discord_remote_enabled,
+            )
+            if self.discord_remote_enabled:
+                self.discord_remote.start_bot()
+            else:
+                self.discord_remote.stop_bot()
+
+    def on_discord_remote_edited(self):
+        self.discord_bot_token = self.discord_token_input.text().strip()
+        self.discord_admin_id = self.discord_admin_input.text().strip()
+        self.save_private_settings()
+        if self.discord_remote:
+            self.discord_remote.configure(
+                self.discord_bot_token,
+                self.discord_admin_id,
+                self.discord_remote_enabled,
+            )
+
+    def restart_discord_bot(self):
+        self.on_discord_remote_edited()
+        if not self.discord_remote:
+            self.discord_status_lbl.setText("สถานะ: ❌ ไม่พบไลบรารี discord.py")
+            return
+        self.discord_status_lbl.setText("สถานะ: 🟡 กำลังเชื่อมต่อ...")
+        self.discord_remote.stop_bot()
+        time.sleep(0.5)
+        self.discord_remote.start_bot()
+
+    @Slot(bool, str)
+    def on_discord_remote_status(self, connected, text):
+        if connected:
+            self.discord_status_lbl.setText(f"สถานะ: 🟢 {text}")
+            self.discord_status_lbl.setStyleSheet(
+                "color: #16a34a; font-size: 11px; font-weight: bold;"
+            )
+        else:
+            self.discord_status_lbl.setText(f"สถานะ: 🔴 {text}")
+            self.discord_status_lbl.setStyleSheet(
+                "color: #dc2626; font-size: 11px;"
+            )
+
+    @Slot(str, object)
+    def on_discord_remote_action(self, action_name, callback):
+        try:
+            if action_name == "check_bag":
+                res = self.worker.execute_remote_check_bag()
+                callback(res)
+            elif action_name == "discard_gold":
+                res = self.worker.execute_remote_discard_gold()
+                callback(res)
+            elif action_name == "screenshot":
+                res = self.worker.execute_remote_screenshot()
+                callback(res)
+            elif action_name == "start_macro":
+                if not self.worker.is_running:
+                    self.toggle_macro()
+                callback({"success": True, "message": "เริ่มการทำงานของบอทแล้ว [F9]"})
+            elif action_name == "stop_macro":
+                if self.worker.is_running:
+                    self.toggle_macro()
+                callback({"success": True, "message": "หยุดพักบอทชั่วคราวแล้ว [F9]"})
+            elif action_name == "feed":
+                self.worker.force_feed_test = True
+                callback({"success": True, "message": "สั่งกินข้าวและน้ำเรียบร้อยแล้ว"})
+            elif action_name == "store_diamonds":
+                self.worker.force_store_test = True
+                callback({"success": True, "message": "สั่งเก็บเพชรลงรถเรียบร้อยแล้ว"})
+            elif action_name == "get_status":
+                running_text = (
+                    "🟢 กำลังทำงาน (Farming)"
+                    if self.worker.is_running
+                    else "🔴 หยุดพัก (Paused)"
+                )
+                fivem_conn = (
+                    "🟢 เชื่อมต่อแล้ว"
+                    if self.worker.hwnd
+                    else "🔴 ไม่พบหน้าต่าง FiveM"
+                )
+                gold_target = (
+                    f"{self.worker.gold_discard_target}/40"
+                    if self.worker.gold_discard_target
+                    else "สุ่มอัตโนมัติ"
+                )
+                diamond_mode = (
+                    "มีรถ (เก็บทุก 40 นาที)"
+                    if self.diamond_mode == "car_timer"
+                    else "ไม่มีรถ (หยุดเมื่อ 40/40)"
+                )
+                food_status = (
+                    "เปิดใช้งาน" if self.auto_feed_enabled else "ปิดใช้งาน"
+                )
+                callback({
+                    "running_text": running_text,
+                    "fivem_connected": fivem_conn,
+                    "gold_target": gold_target,
+                    "diamond_mode": diamond_mode,
+                    "food_status": food_status,
+                })
+            else:
+                callback({
+                    "success": False,
+                    "message": f"ไม่รู้จักคำสั่ง: {action_name}",
+                })
+        except Exception as error:
+            callback({"success": False, "message": f"เกิดข้อผิดพลาด: {error}"})
 
     def setup_realtime_updater(self):
         QTimer.singleShot(5000, self.check_update_silently)
