@@ -57,7 +57,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.2.6"
+CURRENT_APP_VERSION = "1.2.7"
 
 def get_current_version():
     try:
@@ -1399,16 +1399,14 @@ class MacroWorker(QThread):
             y_end = max(0, min(int(bag_y + bag_h), h_img))
         else:
             x_start, x_end = int(w_img * 0.25), int(w_img * 0.90)
-            y_start, y_end = int(h_img * 0.10), int(h_img * 0.95)
-        if x_end - x_start < 20 or y_end - y_start < 20:
+            y_start, y_end = int(h_img * 0.24), int(h_img * 0.95)
+
+        # Strictly exclude top-right Quest HUD (x > 0.65, y < 0.24) which displays quest gold/diamond icons
+        scan_y_start = max(y_start, int(h_img * 0.24))
+        if x_end - x_start < 20 or y_end - scan_y_start < 20:
             return False
 
-        # Gold/diamond artwork is also shown in the job-status cards while the
-        # inventory is closed.  A template match alone therefore produced a
-        # false "inventory open" result and the second T press reopened it.
-        # The actual inventory has a large, continuous dark panel behind its
-        # item slots, so require that panel before checking any item artwork.
-        bag_crop = bg_img[y_start:y_end, x_start:x_end]
+        bag_crop = bg_img[scan_y_start:y_end, x_start:x_end]
         bag_gray = cv2.cvtColor(bag_crop, cv2.COLOR_BGR2GRAY)
         dark_mask = cv2.inRange(bag_gray, 0, 88)
         dark_ratio = cv2.countNonZero(dark_mask) / float(dark_mask.size)
@@ -1428,11 +1426,11 @@ class MacroWorker(QThread):
             return False
 
         x_range = (x_start / w_img, x_end / w_img)
-        y_range = (y_start / h_img, y_end / h_img)
+        y_range = (scan_y_start / h_img, y_end / h_img)
         for template_path, threshold in (
-            ("templates/gold_ore.png", 0.65),
-            ("templates/diamond_icon.png", 0.78),
-            ("templates/gold.png", 0.65),
+            ("templates/gold_ore.png", 0.78),
+            ("templates/diamond_icon.png", 0.82),
+            ("templates/gold.png", 0.78),
         ):
             result = self.find_image(
                 bg_img,
@@ -1442,6 +1440,10 @@ class MacroWorker(QThread):
                 y_range=y_range
             )
             if result and result[0] is not None:
+                mx, my, _ = result
+                # Exclude any match that falls into the quest HUD box
+                if my < int(h_img * 0.24) and mx > int(w_img * 0.65):
+                    continue
                 return True
         return False
 
@@ -1804,10 +1806,13 @@ class MacroWorker(QThread):
             h_img, w_img, _ = bg_trunk.shape
             scaled_bag = self.get_scaled_region(self.bag_region)
             default_x = (scaled_bag[0]/w_img, (scaled_bag[0]+scaled_bag[2])/w_img) if scaled_bag else (0.33, 0.85)
-            default_y = (scaled_bag[1]/h_img, (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.0, 1.0)
+            default_y = (max(0.24, scaled_bag[1]/h_img), (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.24, 0.90)
             
             dia_x, dia_y = self.get_region_ranges(self.diamond_trunk_search_region, w_img, h_img, default_x, default_y)
             diamond_result = self.find_image(bg_trunk, "templates/diamond_trunk.png", 0.70, x_range=dia_x, y_range=dia_y)
+            if diamond_result and diamond_result[0] is not None:
+                if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                    diamond_result = None
             
             if diamond_result and diamond_result[0] is not None:
                 dx, dy, dval = diamond_result
@@ -1880,13 +1885,12 @@ class MacroWorker(QThread):
         h_img, w_img, _ = bg_img.shape
         scaled_bag = self.get_scaled_region(self.bag_region)
         default_x = (scaled_bag[0]/w_img, (scaled_bag[0]+scaled_bag[2])/w_img) if scaled_bag else (0.33, 0.85)
-        default_y = (scaled_bag[1]/h_img, (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.0, 1.0)
+        default_y = (max(0.24, scaled_bag[1]/h_img), (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.24, 0.90)
         dia_x, dia_y = self.get_region_ranges(self.diamond_search_region, w_img, h_img, default_x, default_y)
-        # A 70% match is not specific enough for the small inventory artwork:
-        # orange medicine bottles can reach ~70% and previously triggered the
-        # complete trunk sequence. Real diamond captures are consistently
-        # around 90%, so require a high-confidence icon match.
         diamond_result = self.find_image(bg_img, "templates/diamond_icon.png", 0.86, x_range=dia_x, y_range=dia_y)
+        if diamond_result and diamond_result[0] is not None:
+            if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                diamond_result = None
         if diamond_result and diamond_result[0] is not None:
             dx, dy, val = diamond_result
             # Load template to get actual dimensions for proper slot extraction
@@ -1942,7 +1946,7 @@ class MacroWorker(QThread):
         h_img, w_img = bg_img.shape[:2]
         scaled_bag = self.get_scaled_region(self.bag_region)
         default_x = (scaled_bag[0] / w_img, (scaled_bag[0] + scaled_bag[2]) / w_img) if scaled_bag else (0.33, 0.85)
-        default_y = (scaled_bag[1] / h_img, (scaled_bag[1] + scaled_bag[3]) / h_img) if scaled_bag else (0.0, 1.0)
+        default_y = (max(0.24, scaled_bag[1] / h_img), (scaled_bag[1] + scaled_bag[3]) / h_img) if scaled_bag else (0.24, 0.90)
         dia_x, dia_y = self.get_region_ranges(
             self.diamond_search_region, w_img, h_img, default_x, default_y
         )
@@ -1950,6 +1954,9 @@ class MacroWorker(QThread):
             bg_img, "templates/diamond_icon.png", 0.86,
             x_range=dia_x, y_range=dia_y
         )
+        if diamond_result and diamond_result[0] is not None:
+            if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                diamond_result = None
         elapsed = time.time() - self.diamond_cycle_started_at
         interval_seconds = self.diamond_interval_minutes * 60
         remaining = max(0, int(interval_seconds - elapsed))
@@ -2006,7 +2013,7 @@ class MacroWorker(QThread):
         h_img, w_img = bg_img.shape[:2]
         scaled_bag = self.get_scaled_region(self.bag_region)
         default_x = (scaled_bag[0] / w_img, (scaled_bag[0] + scaled_bag[2]) / w_img) if scaled_bag else (0.33, 0.85)
-        default_y = (scaled_bag[1] / h_img, (scaled_bag[1] + scaled_bag[3]) / h_img) if scaled_bag else (0.0, 1.0)
+        default_y = (max(0.24, scaled_bag[1] / h_img), (scaled_bag[1] + scaled_bag[3]) / h_img) if scaled_bag else (0.24, 0.90)
         dia_x, dia_y = self.get_region_ranges(
             self.diamond_search_region, w_img, h_img, default_x, default_y
         )
@@ -2014,6 +2021,9 @@ class MacroWorker(QThread):
             bg_img, "templates/diamond_full.png", 0.88,
             x_range=dia_x, y_range=dia_y
         )
+        if full_result and full_result[0] is not None:
+            if full_result[1] < int(h_img * 0.24) and full_result[0] > int(w_img * 0.65):
+                full_result = None
         if full_result and full_result[0] is not None:
             dx, dy, val = full_result
             template = cv2.imread(self.resolve_template_path("templates/diamond_full.png"))
@@ -2231,8 +2241,11 @@ class MacroWorker(QThread):
                 preview_ore_img, preview_text_img = np.zeros((10, 10, 3), dtype=np.uint8), np.zeros((10, 10, 3), dtype=np.uint8)
                 preview_ore_score, preview_text_score, preview_target_thresh = 0.0, 0.0, self.thresholds["gold"]
                 
-                gold_x, gold_y = self.get_region_ranges(self.gold_search_region, w_img, h_img, (0.25, 0.85), (0.15, 0.90))
+                gold_x, gold_y = self.get_region_ranges(self.gold_search_region, w_img, h_img, (0.25, 0.85), (0.24, 0.90))
                 ore_result = self.find_image(bg_img, gold_ore_path, 0.72, x_range=gold_x, y_range=gold_y)
+                if ore_result and ore_result[0] is not None:
+                    if ore_result[1] < int(h_img * 0.24) and ore_result[0] > int(w_img * 0.65):
+                        ore_result = None
                 if ore_result: preview_ore_score = ore_result[2]
                 if ore_result and ore_result[0] is not None:
                     ore_x, ore_y, ore_val = ore_result
