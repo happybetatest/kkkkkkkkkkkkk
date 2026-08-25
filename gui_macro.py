@@ -57,7 +57,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.2.8"
+CURRENT_APP_VERSION = "1.2.9"
 
 def get_current_version():
     try:
@@ -1153,6 +1153,7 @@ class MacroWorker(QThread):
             orig_pos = win32api.GetCursorPos()
             focus_error = None
             try:
+                ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
                 win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
                 win32gui.BringWindowToTop(self.hwnd)
                 win32gui.SetForegroundWindow(self.hwnd)
@@ -1160,9 +1161,6 @@ class MacroWorker(QThread):
                 focus_error = error
                 attached = False
                 try:
-                    # Do not use the old global Alt keystroke workaround here.
-                    # If it arrived late while a GTA menu was open it could
-                    # contribute to unintended Rockstar Editor navigation.
                     foreground = win32gui.GetForegroundWindow()
                     foreground_thread = win32process.GetWindowThreadProcessId(
                         foreground
@@ -1174,6 +1172,7 @@ class MacroWorker(QThread):
                                 current_thread, foreground_thread, True
                             )
                         )
+                    ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
                     win32gui.BringWindowToTop(self.hwnd)
                     win32gui.SetForegroundWindow(self.hwnd)
                 except Exception as retry_error:
@@ -1187,7 +1186,8 @@ class MacroWorker(QThread):
                         except Exception:
                             pass
             time.sleep(0.3)
-            if win32gui.GetForegroundWindow() != self.hwnd:
+            current_fg = win32gui.GetForegroundWindow()
+            if current_fg != self.hwnd and win32gui.GetAncestor(current_fg, win32con.GA_ROOT) != self.hwnd:
                 detail = f": {focus_error}" if focus_error else ""
                 self.log_signal.emit(
                     "[ระบบ] ไม่สามารถโฟกัส FiveM ได้"
@@ -1207,69 +1207,43 @@ class MacroWorker(QThread):
             return None
 
     def send_game_key(self, key_name, duration=0.10, require_focus=True):
-        """Send a hardware key only while FiveM is the foreground window.
-
-        SendInput is global.  Guarding every call here prevents a delayed key
-        from reaching the desktop, pause menu, or Rockstar Editor.
-        """
-        # Re-assert foreground ownership before every key, even when Windows
-        # currently reports FiveM in front.  Focus can change between capture
-        # and SendInput.  activate_game_window no longer clicks the game.
-        if require_focus:
-            if self.activate_game_window() is None:
-                return False
-        if win32gui.GetForegroundWindow() != self.hwnd:
+        """Send a hardware key only while FiveM is the foreground window."""
+        if require_focus and self.activate_game_window() is None:
             return False
-        send_key_direct(key_name, duration=duration)
-        return win32gui.GetForegroundWindow() == self.hwnd
+        return send_key_hardware(key_name, duration=duration)
 
     def is_pause_menu_open(self, bg_img=None):
-        """Check if GTA V Pause Menu (Map/Settings/Rockstar Editor header) is on screen."""
+        """Detect the full-screen GTA V Pause Menu."""
         if bg_img is None:
             bg_img = self.capture_background(self.hwnd)
         if bg_img is None:
             return False
-        try:
-            h_img, w_img = bg_img.shape[:2]
-            top_bar = bg_img[0:int(h_img * 0.12), :]
-            top_gray = cv2.cvtColor(top_bar, cv2.COLOR_BGR2GRAY)
-            dark_ratio = float(np.mean(top_gray < 30))
-            bright_ratio = float(np.mean(top_gray > 220))
-            bot_bar = bg_img[int(h_img * 0.90):, :]
-            bot_gray = cv2.cvtColor(bot_bar, cv2.COLOR_BGR2GRAY)
-            bot_dark = float(np.mean(bot_gray < 30))
-            if dark_ratio > 0.65 and bright_ratio > 0.01 and bot_dark > 0.60:
-                return True
-        except Exception:
-            pass
-        return False
+        h_img, w_img = bg_img.shape[:2]
+        header_crop = bg_img[0:int(h_img * 0.15), 0:int(w_img * 0.60)]
+        header_gray = cv2.cvtColor(header_crop, cv2.COLOR_BGR2GRAY)
+        bright_mask = cv2.inRange(header_gray, 200, 255)
+        bright_ratio = cv2.countNonZero(bright_mask) / float(bright_mask.size)
+        return bright_ratio > 0.08
 
     def ensure_not_in_pause_menu(self):
-        """If game is in Pause Menu/Settings, press Esc to exit back to game."""
-        bg = self.capture_background(self.hwnd)
-        if bg is not None and self.is_pause_menu_open(bg):
-            self.log_signal.emit("[ระบบความปลอดภัย] ตรวจพบหน้า Pause Menu/การตั้งค่า กำลังกด Esc เพื่อกลับเข้าเกม...")
-            send_key_direct("esc", duration=0.15)
-            time.sleep(0.8)
-            return True
+        """Press Esc if currently stuck in GTA V Pause Menu."""
+        for _ in range(3):
+            bg = self.capture_background(self.hwnd)
+            if bg is None or not self.is_pause_menu_open(bg):
+                return True
+            self.log_signal.emit("[ระบบป้องกัน] พบหน้า Pause Menu กำลังกด Esc เพื่อกลับสู่เกม...")
+            if self.activate_game_window() is not None:
+                self.send_game_key("esc")
+                time.sleep(0.8)
         return False
 
-    def hold_game_key(self, key_name, duration):
-        """Hold a key with focus checks and always release it."""
-        if self.activate_game_window() is None:
+    def hold_game_key(self, key_name, duration=1.0, require_focus=True):
+        """Hold a hardware key only while FiveM is the foreground window."""
+        self.ensure_not_in_pause_menu()
+        if require_focus and self.activate_game_window() is None:
             return False
-        if key_name.lower() == "e":
-            self.ensure_not_in_pause_menu()
-        press_key_hold(key_name)
-        try:
-            end_at = time.time() + duration
-            while time.time() < end_at:
-                if win32gui.GetForegroundWindow() != self.hwnd:
-                    return False
-                time.sleep(min(0.1, end_at - time.time()))
-            return True
-        finally:
-            release_key_hold(key_name)
+        self.ensure_not_in_pause_menu()
+        return hold_key_hardware(key_name, duration=duration)
 
     def update_character_idle_state(self, bg_img):
         """Open the inventory after a genuinely static gameplay interval."""
@@ -1310,31 +1284,24 @@ class MacroWorker(QThread):
         return True
 
     def is_rockstar_confirmation(self, bg_img):
-        """Detect the bottom-right No/Esc/Yes/Enter Rockstar prompt.
-
-        The prompt contains two large bright key-cap icons on an otherwise
-        almost black strip.  This avoids depending on language-specific text.
-        """
-        return False
-        try:
-            h_img, w_img = bg_img.shape[:2]
-            roi = bg_img[int(h_img * 0.90):h_img, int(w_img * 0.86):w_img]
-            if roi.size == 0:
-                return False
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            dark_ratio = float(np.mean(gray < 20))
-            bright = (gray > 205).astype(np.uint8) * 255
-            count, _, stats, _ = cv2.connectedComponentsWithStats(bright, 8)
-            large_caps = 0
-            for index in range(1, count):
-                _, _, width, height, area = map(int, stats[index])
-                if area >= 180 and width >= 14 and height >= 14:
-                    large_caps += 1
-            return dark_ratio >= 0.72 and large_caps >= 2
-        except Exception:
+        """Detect the in-game 'Sure you want to open Rockstar Editor?' prompt."""
+        if bg_img is None:
             return False
+        h_img, w_img = bg_img.shape[:2]
+        crop_h = max(20, int(h_img * 0.40))
+        crop_w = max(20, int(w_img * 0.60))
+        y0 = (h_img - crop_h) // 2
+        x0 = (w_img - crop_w) // 2
+        box = bg_img[y0:y0 + crop_h, x0:x0 + crop_w]
+        gray = cv2.cvtColor(box, cv2.COLOR_BGR2GRAY)
+        dark_ratio = float(np.count_nonzero(gray < 40)) / float(gray.size)
+        if dark_ratio < 0.35:
+            return False
+        bright_ratio = float(np.count_nonzero(gray > 215)) / float(gray.size)
+        return bright_ratio > 0.004
 
     def recover_from_rockstar_confirmation(self, bg_img):
+        """Escape cleanly out of the Rockstar Editor prompt without getting stuck."""
         if not self.is_rockstar_confirmation(bg_img):
             return False
         now = time.time()
@@ -1430,15 +1397,15 @@ class MacroWorker(QThread):
             max((cv2.contourArea(contour) for contour in contours), default=0.0)
             / float(dark_mask.size)
         )
-        if dark_ratio < 0.25 or largest_dark_ratio < 0.12:
+        if dark_ratio < 0.18 or largest_dark_ratio < 0.08:
             return False
 
         x_range = (x_start / w_img, x_end / w_img)
         y_range = (scan_y_start / h_img, y_end / h_img)
         for template_path, threshold in (
-            ("templates/gold_ore.png", 0.78),
-            ("templates/diamond_icon.png", 0.82),
-            ("templates/gold.png", 0.78),
+            ("templates/gold_ore.png", 0.70),
+            ("templates/diamond_icon.png", 0.76),
+            ("templates/gold.png", 0.70),
         ):
             result = self.find_image(
                 bg_img,
