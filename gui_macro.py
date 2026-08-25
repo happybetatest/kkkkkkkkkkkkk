@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.6"
+CURRENT_APP_VERSION = "1.3.7"
 
 def get_current_version():
     try:
@@ -1776,6 +1776,12 @@ class MacroWorker(QThread):
             self.character_idle_since = 0.0
             return False
         now = time.time()
+        # If inventory is currently open on screen, the character is normally static (mining)
+        if self.is_inventory_open(bg_img):
+            self.character_idle_since = now
+            self.last_activity_frame = None
+            return False
+
         if now - self.last_activity_sample_time < 2.0:
             return False
         self.last_activity_sample_time = now
@@ -1877,15 +1883,21 @@ class MacroWorker(QThread):
             max((cv2.contourArea(contour) for contour in contours), default=0.0)
             / float(dark_mask.size)
         )
-        if dark_ratio < 0.18 or largest_dark_ratio < 0.08:
+        if dark_ratio < 0.15 or largest_dark_ratio < 0.06:
             return False
+
+        # If a large prominent dark inventory container is present
+        if dark_ratio >= 0.22 and largest_dark_ratio >= 0.09:
+            return True
 
         x_range = (x_start / w_img, x_end / w_img)
         y_range = (scan_y_start / h_img, y_end / h_img)
         for template_path, threshold in (
-            ("templates/gold_ore.png", 0.70),
-            ("templates/diamond_icon.png", 0.76),
-            ("templates/gold.png", 0.70),
+            ("templates/gold_ore.png", 0.65),
+            ("templates/diamond_icon.png", 0.70),
+            ("templates/gold.png", 0.65),
+            ("templates/all.png", 0.60),
+            ("templates/destroy.png", 0.60),
         ):
             result = self.find_image(
                 bg_img,
@@ -1900,7 +1912,7 @@ class MacroWorker(QThread):
                 if my < int(h_img * 0.24) and mx > int(w_img * 0.65):
                     continue
                 return True
-        return False
+        return largest_dark_ratio >= 0.08
 
     def ensure_inventory_open(self, log_prefix="[ระบบ]"):
         if self.is_inventory_open():
