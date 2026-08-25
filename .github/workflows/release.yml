@@ -57,6 +57,7 @@ jobs:
           New-Item -ItemType Directory -Force release-package\templates\_app | Out-Null
           Copy-Item gui_macro.py release-package\templates\_app\
           Copy-Item keyauth_helper.py release-package\templates\_app\
+          Copy-Item discord_remote.py release-package\templates\_app\
           Copy-Item portable-runtime release-package\templates\_runtime -Recurse
           Compress-Archive -Path release-package\* -DestinationPath dist\FiveM-Farming-Package.zip -Force
           $hash = (Get-FileHash dist\FiveM-Farming-Package.zip -Algorithm SHA256).Hash.ToLower()
