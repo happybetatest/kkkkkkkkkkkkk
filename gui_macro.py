@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.5"
+CURRENT_APP_VERSION = "1.3.6"
 
 def get_current_version():
     try:
@@ -702,7 +702,7 @@ class DiscordRemoteWorker(QObject):
             return
 
         # 8. STORE DIAMONDS
-        if cmd in ("store", "เก็บเพชร", "เก็บของ", "รถ"):
+        if cmd in ("store", "เก็บเพชร", "เก็บของ", "รถ", "diamond", "เพชร"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
                 "💎 กำลังเริ่มกระบวนการเก็บเพชรลงท้ายรถ...",
@@ -717,12 +717,20 @@ class DiscordRemoteWorker(QObject):
             self.action_requested.emit("store_diamonds", callback)
 
             try:
-                res = await asyncio.wait_for(future, timeout=30.0)
+                res = await asyncio.wait_for(future, timeout=35.0)
+                img_path = res.get("image_path")
+                msg_text = res.get("message", "กระบวนการเก็บเพชรเสร็จสิ้น")
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    f"💎 **{res.get('message', 'กระบวนการเก็บเพชรเสร็จสิ้น')}**",
+                    content=f"💎 **{msg_text}**",
+                    file_path=img_path,
                     reply_to_message_id=msg_id
                 )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
                 if wait_id:
                     delete_discord_rest_message(self.bot_token, channel_id, wait_id)
             except asyncio.TimeoutError:
@@ -2658,6 +2666,33 @@ class MacroWorker(QThread):
         except Exception:
             return {"success": False, "image_path": None}
 
+    def execute_remote_store_diamonds(self):
+        """Execute the full diamond storing sequence from Discord command."""
+        try:
+            success = self.execute_store_diamonds_sequence()
+            bg_after = self.capture_background(self.hwnd)
+            temp_path = get_writable_path("discord_store_capture.png")
+            if bg_after is not None:
+                cv2.imwrite(temp_path, bg_after)
+
+            msg = "เก็บเพชรลงรถสำเร็จเรียบร้อยแล้ว!" if success else "กระบวนการเก็บเพชรเสร็จสิ้น (โปรดตรวจสอบว่าตัวละครอยู่ใกล้ท้ายรถ)"
+            return {
+                "success": success,
+                "message": msg,
+                "image_path": temp_path if os.path.isfile(temp_path) else None,
+            }
+        except Exception as error:
+            return {"success": False, "message": f"เกิดข้อผิดพลาดในการเก็บเพชร: {error}"}
+
+    def execute_remote_feed(self):
+        """Execute the feeding sequence from Discord command."""
+        try:
+            self.execute_feeding_sequence(need_food=True, need_water=True)
+            return {"success": True, "message": "ป้อนอาหารและน้ำให้ตัวละครเรียบร้อยแล้ว!"}
+        except Exception as error:
+            return {"success": False, "message": f"เกิดข้อผิดพลาดในการป้อนอาหาร: {error}"}
+
+
     def run(self):
         while not self.is_exiting:
             try:
@@ -4055,11 +4090,11 @@ class MainWindow(QMainWindow):
                     self.toggle_macro()
                 callback({"success": True, "message": "หยุดพักบอทชั่วคราวแล้ว [F9]"})
             elif action_name == "feed":
-                self.worker.force_feed_test = True
-                callback({"success": True, "message": "สั่งกินข้าวและน้ำเรียบร้อยแล้ว"})
+                res = self.worker.execute_remote_feed()
+                callback(res)
             elif action_name == "store_diamonds":
-                self.worker.force_store_test = True
-                callback({"success": True, "message": "สั่งเก็บเพชรลงรถเรียบร้อยแล้ว"})
+                res = self.worker.execute_remote_store_diamonds()
+                callback(res)
             elif action_name == "get_status":
                 running_text = (
                     "🟢 กำลังทำงาน (Farming)"
