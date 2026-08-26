@@ -82,12 +82,17 @@
     "thirst_limit": 10,
     "auto_feed_enabled": true,
     "auto_store_enabled": true,
-    "dark_mode": false,
     "diamond_mode": "car_timer",
     "diamond_interval_minutes": 40,
     "reference_resolution": [
         1600,
         900
     ],
-    "template_reference_sizes": {}
+    "template_reference_sizes": {},
+    "window_geometry": [
+        1219,
+        30,
+        680,
+        520
+    ]
 }

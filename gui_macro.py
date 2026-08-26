@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.4.1"
+CURRENT_APP_VERSION = "1.4.2"
 
 def get_current_version():
     try:
@@ -529,6 +529,7 @@ class DiscordRemoteWorker(QObject):
                 f"🎮 **FiveM Farming [{self.bot_name}] — เมนูคำสั่งควบคุมระยะไกล**\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🚀 `{pfx}เข้าเกม [IP/cfx]` : **สั่งเปิด FiveM และเชื่อมต่อเข้าเซิร์ฟเวอร์ทันที**\n"
+                f"📍 `{pfx}mark` หรือ `{pfx}มาร์คแมพ` : **เปิดแผนที่ (P) และปักหมุด Waypoint จุดขุดให้อัตโนมัติ**\n"
                 f"📦 `{pfx}check` หรือ `{pfx}bag` : **เปิดกระเป๋า ตรวจเช็คทอง/เพชร และถ่ายรูปส่งกลับมา**\n"
                 f"🗑️ `{pfx}discard` หรือ `{pfx}ทิ้งทอง` : **สั่งทิ้งทอง กดยืนยัน และกลับไปเริ่มฟาร์มต่อให้อัตโนมัติ**\n"
                 f"📸 `{pfx}screen` : ถ่ายภาพหน้าจอ FiveM สดๆ\n"
@@ -829,6 +830,46 @@ class DiscordRemoteWorker(QObject):
             send_discord_rest_message(self.bot_token, channel_id, status_text, reply_to_message_id=msg_id)
             return
 
+        # 11. MARK MAP
+        if main_cmd in ("mark", "map", "มาร์ค", "มาร์คแมพ", "ปักหมุด", "ทาง", "waypoint"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 📍 กำลังเปิดแผนที่ (P) และปักหมุด Waypoint จุดขุด...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("mark_map", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=25.0)
+                img_path = res.get("image_path")
+                msg_text = res.get("message", "ปักหมุด Waypoint สำเร็จ")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 📍 **{msg_text}**",
+                    file_path=img_path,
+                    reply_to_message_id=msg_id
+                )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ กระบวนการมาร์คแมพหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
 # ==========================================
 # REGION SELECTOR OVERLAY
 # ==========================================
@@ -947,6 +988,7 @@ class MacroWorker(QThread):
         self.discord_webhook_url = ""
         self.auto_feed_enabled = True
         self.auto_store_enabled = True
+        self.map_mark_coordinate = None
         self.reference_resolution = None
         self.template_reference_sizes = {}
         self.last_runtime_error = ""
@@ -1008,6 +1050,8 @@ class MacroWorker(QThread):
                 self.diamond_interval_minutes = max(1, int(value))
             elif key == "webhook":
                 self.discord_webhook_url = str(value or "").strip()
+        elif config_type == "map_mark":
+            if key == "coordinate": self.map_mark_coordinate = value
         elif config_type == "ref_res": self.reference_resolution = value
         elif config_type == "template_refs": self.template_reference_sizes = value or {}
 
@@ -2754,6 +2798,115 @@ class MacroWorker(QThread):
         except Exception as error:
             return {"success": False, "message": f"เกิดข้อผิดพลาดในการป้อนอาหาร: {error}"}
 
+    def execute_remote_mark_map(self):
+        """Execute the Map Waypoint Marking sequence (Press P -> Locate Mine Job / Yellow Truck -> Mark waypoint -> Close Map)."""
+        try:
+            if not self.hwnd:
+                self.hwnd = self.get_window_hwnd(WINDOW_NAME)
+            if not self.hwnd:
+                return {"success": False, "message": "ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนสั่งมาร์คแมพ"}
+
+            self.log_signal.emit("[ระบบมาร์คแมพ] เริ่มต้นกระบวนการมาร์คแมพจุดขุด...")
+            self.activate_game_window()
+            time.sleep(0.2)
+
+            # 1. Open Map with 'P'
+            self.log_signal.emit("[ระบบมาร์คแมพ] กำลังเปิดหน้าต่างแผนที่ (กด P)...")
+            self.send_game_key("P", duration=0.12)
+            time.sleep(1.0)
+
+            # 2. Capture map screen
+            map_img = self.capture_background(self.hwnd)
+            if map_img is None:
+                self.send_game_key("ESC", duration=0.12)
+                return {"success": False, "message": "ไม่สามารถจับภาพหน้าจอแผนที่ได้"}
+
+            target_x = None
+            target_y = None
+            found_by = ""
+
+            # 3. Try to locate yellow truck blip / Mine Job text using template matching
+            template_files = ["templates/map_yellow_truck.png", "templates/map_mine_blip.png", "templates/map_mine_job.png"]
+            for t_file in template_files:
+                t_path = self.resolve_template_path(t_file)
+                if os.path.isfile(t_path):
+                    tpl = cv2.imread(t_path)
+                    if tpl is not None:
+                        res = cv2.matchTemplate(map_img, tpl, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                        if max_val >= 0.70:
+                            th, tw = tpl.shape[:2]
+                            target_x = max_loc[0] + tw // 2
+                            target_y = max_loc[1] + th // 2
+                            found_by = f"ไอคอน {os.path.basename(t_file)} (ความแม่นยำ {int(max_val * 100)}%)"
+                            break
+
+            # 4. Fallback to custom saved coordinate if template not found
+            if target_x is None and self.map_mark_coordinate and len(self.map_mark_coordinate) >= 2:
+                target_x = int(self.map_mark_coordinate[0])
+                target_y = int(self.map_mark_coordinate[1])
+                found_by = "พิกัดที่ผู้ใช้บันทึกไว้"
+
+            if target_x is None or target_y is None:
+                # Close map before returning
+                self.send_game_key("ESC", duration=0.12)
+                time.sleep(0.3)
+                self.send_game_key("ESC", duration=0.12)
+                return {
+                    "success": False,
+                    "message": "ไม่พบไอคอน Mine Job (รถสีเหลือง) บนแผนที่ และยังไม่ได้บันทึกพิกัดไว้ กรุณาเลื่อนแผนที่ให้เห็นไอคอน หรือกดบันทึกพิกัดในโปรแกรม"
+                }
+
+            # 5. Click target coordinate to place Waypoint
+            self.log_signal.emit(f"[ระบบมาร์คแมพ] ตรวจพบเป้าหมาย ({found_by}) ที่ตำแหน่ง ({target_x}, {target_y}) — กำลังปักหมุด...")
+            
+            screen_pt = self.client_to_screen(target_x, target_y)
+            try:
+                win32api.SetCursorPos(screen_pt)
+                time.sleep(0.08)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(0.12)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            except Exception:
+                self.bg_click(self.hwnd, target_x, target_y)
+                time.sleep(0.12)
+                self.bg_click(self.hwnd, target_x, target_y)
+
+            time.sleep(0.10)
+            self.send_game_key("Enter", duration=0.10)
+            time.sleep(0.5)
+
+            # 6. Capture proof with waypoint marker
+            marked_img = self.capture_background(self.hwnd)
+            marked_path = get_writable_path("discord_mark_map_capture.png")
+            if marked_img is not None:
+                cv2.circle(marked_img, (target_x, target_y), 18, (0, 255, 0), 2)
+                cv2.imwrite(marked_path, marked_img)
+
+            # 7. Close map (ESC)
+            self.log_signal.emit("[ระบบมาร์คแมพ] กำลังปิดแผนที่กลับเข้าสู่เกม (กด ESC)...")
+            self.send_game_key("ESC", duration=0.12)
+            time.sleep(0.4)
+            self.send_game_key("ESC", duration=0.12)
+            time.sleep(0.2)
+
+            self.log_signal.emit("[ระบบมาร์คแมพ] ✅ ปักหมุด Waypoint จุดขุดบนแผนที่สำเร็จเรียบร้อยแล้ว!")
+            return {
+                "success": True,
+                "message": f"ปักหมุด Waypoint จุดขุด (Mine Job) สำเร็จเรียบร้อยแล้ว! ({found_by})",
+                "image_path": marked_path if os.path.isfile(marked_path) else None,
+            }
+        except Exception as error:
+            try:
+                self.send_game_key("ESC", duration=0.12)
+            except Exception:
+                pass
+            return {"success": False, "message": f"เกิดข้อผิดพลาดในการมาร์คแมพ: {error}"}
+
 
     def run(self):
         while not self.is_exiting:
@@ -3304,6 +3457,40 @@ class MainWindow(QMainWindow):
         server_layout.addLayout(server_input_row)
         config_tab_layout.addWidget(server_box)
 
+        # Map Waypoint Box
+        map_box = QGroupBox("📍 ระบบมาร์คแมพจุดขุด (Map Waypoint)")
+        map_box.setObjectName("ConfigGroup")
+        map_layout = QVBoxLayout(map_box)
+        map_layout.setSpacing(6)
+
+        self.map_mark_lbl = QLabel(
+            f"พิกัดมาร์ค: {self.get_region_text(self.map_mark_coordinate)}"
+            if self.map_mark_coordinate
+            else "พิกัดมาร์ค: อัตโนมัติ (ตรวจจับไอคอนรถสีเหลือง 🚚)"
+        )
+        self.map_mark_lbl.setStyleSheet("color: #475569; font-size: 11px;")
+
+        map_btn_row = QHBoxLayout()
+        self.btn_test_mark_map = QPushButton("📍 ทดสอบมาร์คแมพ (กด P และปักหมุด)")
+        self.btn_test_mark_map.setStyleSheet("QPushButton { background-color: #8b5cf6; border: none; color: white; font-weight: bold; font-size: 12px; border-radius: 6px; padding: 6px 12px; }")
+        self.btn_test_mark_map.clicked.connect(self.test_mark_map_sequence)
+
+        self.btn_crop_map_mark = QPushButton("🎯 บันทึกพิกัด/ครอปรูป")
+        self.btn_crop_map_mark.setStyleSheet("QPushButton { background-color: #0284c7; border: none; color: white; font-size: 11px; border-radius: 6px; padding: 6px 8px; }")
+        self.btn_crop_map_mark.clicked.connect(self.select_map_mark_region)
+
+        self.btn_reset_map_mark = QPushButton("🔄 ออโต้")
+        self.btn_reset_map_mark.setStyleSheet("QPushButton { font-size: 11px; padding: 6px 8px; }")
+        self.btn_reset_map_mark.clicked.connect(self.reset_map_mark_coordinate)
+
+        map_btn_row.addWidget(self.btn_test_mark_map)
+        map_btn_row.addWidget(self.btn_crop_map_mark)
+        map_btn_row.addWidget(self.btn_reset_map_mark)
+
+        map_layout.addWidget(self.map_mark_lbl)
+        map_layout.addLayout(map_btn_row)
+        config_tab_layout.addWidget(map_box)
+
         toggle_box = QGroupBox("เปิด/ปิดฟังก์ชัน")
         toggle_layout = QVBoxLayout(toggle_box)
         self.auto_feed_cb = QCheckBox("ระบบกินข้าว/น้ำอัตโนมัติ")
@@ -3628,6 +3815,7 @@ class MainWindow(QMainWindow):
         self.worker.set_config("mode", "diamond", self.diamond_mode)
         self.worker.set_config("interval", "diamond", self.diamond_interval_minutes)
         self.worker.set_config("webhook", "diamond", self.discord_webhook_url)
+        self.worker.set_config("coordinate", "map_mark", self.map_mark_coordinate)
         self.worker.set_config("ref_res", "ref_res", self.reference_resolution)
         self.worker.set_config("template_refs", "template_refs", self.template_reference_sizes)
 
@@ -3805,6 +3993,7 @@ class MainWindow(QMainWindow):
                     self.thirst_limit = data.get("thirst_limit", 20)
                     self.auto_feed_enabled = data.get("auto_feed_enabled", True)
                     self.auto_store_enabled = data.get("auto_store_enabled", True)
+                    self.map_mark_coordinate = data.get("map_mark_coordinate", None)
                     self.diamond_mode = data.get("diamond_mode", "car_timer")
                     # Car storage now uses a fixed 40-minute interval. Ignore
                     # the legacy saved value so existing installations migrate.
@@ -3831,6 +4020,7 @@ class MainWindow(QMainWindow):
                 "confirm_trunk_search_region": self.confirm_trunk_search_region,
                 "hunger_limit": self.hunger_limit, "thirst_limit": self.thirst_limit,
                 "auto_feed_enabled": self.auto_feed_enabled, "auto_store_enabled": self.auto_store_enabled,
+                "map_mark_coordinate": self.map_mark_coordinate,
                 "diamond_mode": self.diamond_mode,
                 "diamond_interval_minutes": self.diamond_interval_minutes,
                 "reference_resolution": self.reference_resolution,
@@ -4148,6 +4338,43 @@ class MainWindow(QMainWindow):
             else:
                 self.discord_remote.stop_bot()
 
+    def test_mark_map_sequence(self):
+        if not self.worker.hwnd:
+            self.write_log("[!] ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนทดสอบมาร์คแมพ")
+            return
+        self.write_log("[ระบบมาร์คแมพ] กำลังทดสอบปักหมุด Waypoint บนแผนที่ (กด P)...")
+        threading.Thread(target=self.worker.execute_remote_mark_map, daemon=True).start()
+
+    def select_map_mark_region(self):
+        if not self.worker.hwnd: return
+        self.hide()
+        time.sleep(0.3)
+        self.selector = RegionSelector(self.map_mark_region_selected, self.show)
+        self.selector.show()
+
+    def map_mark_region_selected(self, x, y, w, h):
+        try:
+            region, self.reference_resolution = self.save_template_from_game_capture("map_mine_blip.png", x, y, w, h)
+            rx, ry, rw, rh = region
+            self.map_mark_coordinate = [rx + rw // 2, ry + rh // 2]
+            if hasattr(self, "map_mark_lbl"):
+                self.map_mark_lbl.setText(f"พิกัดมาร์ค: X:{self.map_mark_coordinate[0]}, Y:{self.map_mark_coordinate[1]} (ครอปไอคอนแล้ว)")
+            self.sync_worker_config()
+            self.save_config()
+            self.write_log(f"[ระบบมาร์คแมพ] บันทึกพิกัดและไอคอนจุดมาร์ค ({self.map_mark_coordinate[0]}, {self.map_mark_coordinate[1]}) เรียบร้อยแล้ว")
+        except Exception as e:
+            self.write_log(f"[!] เกิดข้อผิดพลาดในการบันทึกจุดมาร์ค: {e}")
+        finally:
+            self.show()
+
+    def reset_map_mark_coordinate(self):
+        self.map_mark_coordinate = None
+        if hasattr(self, "map_mark_lbl"):
+            self.map_mark_lbl.setText("พิกัดมาร์ค: อัตโนมัติ (ตรวจจับไอคอนรถสีเหลือง 🚚)")
+        self.sync_worker_config()
+        self.save_config()
+        self.write_log("[ระบบมาร์คแมพ] รีเซ็ตเป็นโหมดค้นหาไอคอนอัตโนมัติเรียบร้อยแล้ว")
+
     def on_discord_remote_edited(self):
         self.discord_bot_token = self.discord_token_input.text().strip()
         self.discord_admin_id = self.discord_admin_input.text().strip()
@@ -4258,6 +4485,9 @@ class MainWindow(QMainWindow):
                 if cb:
                     cb({"success": success, "message": msg})
                 return
+            elif action_name == "mark_map":
+                res = self.worker.execute_remote_mark_map()
+                callback(res)
             elif action_name == "check_bag":
                 res = self.worker.execute_remote_check_bag()
                 callback(res)
