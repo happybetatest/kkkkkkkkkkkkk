@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QSlider, QTextEdit, QFrame, QGridLayout, 
     QGroupBox, QSystemTrayIcon, QMenu, QCheckBox, QTabWidget, QScrollArea,
-    QComboBox, QLineEdit, QMessageBox, QProgressBar
+    QComboBox, QLineEdit, QMessageBox, QProgressBar, QDialog, QTextBrowser
 )
 from PySide6.QtGui import (
     QIcon, QAction, QColor, QFont, QPainter, QPen, QPixmap, QImage, QPalette
@@ -4034,6 +4034,277 @@ class MacroWorker(QThread):
         self.wait()
 
 # ==========================================
+# README & USER MANUAL DIALOG
+# ==========================================
+class ReadmeDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("📖 คู่มือการใช้งาน FiveM Farming Macro (Readme & Manual)")
+        self.resize(840, 640)
+        self.setStyleSheet("""
+            QDialog { background-color: #f8fafc; font-family: 'Segoe UI', Tahoma, sans-serif; }
+            QTabWidget::pane { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; }
+            QTabBar::tab { background-color: #e2e8f0; color: #475569; font-weight: bold; font-size: 12px; border: 1px solid #cbd5e1; padding: 8px 16px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; }
+            QTabBar::tab:selected { background-color: #ffffff; color: #0f766e; border-bottom: 2px solid #0d9488; }
+            QTabBar::tab:hover:!selected { background-color: #f1f5f9; }
+            QTextBrowser { background-color: #ffffff; color: #1e293b; border: none; font-size: 13px; padding: 14px; }
+            QPushButton { background-color: #0d9488; color: white; border: none; border-radius: 6px; font-weight: bold; font-size: 12px; padding: 8px 24px; }
+            QPushButton:hover { background-color: #0f766e; }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        # Header
+        header = QHBoxLayout()
+        header_icon = QLabel("📖")
+        header_icon.setStyleSheet("font-size: 28px;")
+        header_text = QVBoxLayout()
+        title = QLabel("คู่มือและวิธีการใช้งานระบบมาโคร (Readme & User Guide)")
+        title.setStyleSheet("font-size: 17px; font-weight: bold; color: #0f172a;")
+        subtitle = QLabel("FiveM Farming Macro Background Automation • คำสั่ง Discord Bot, ปุ่มคีย์ลัด, แผนที่ และการตั้งค่า")
+        subtitle.setStyleSheet("font-size: 12px; color: #64748b;")
+        header_text.addWidget(title)
+        header_text.addWidget(subtitle)
+        header.addWidget(header_icon)
+        header.addLayout(header_text)
+        header.addStretch()
+        layout.addLayout(header)
+
+        # Tabs
+        tabs = QTabWidget()
+
+        # Tab 1: คำสั่ง Discord Bot
+        tab_discord = QTextBrowser()
+        tab_discord.setOpenExternalLinks(True)
+        tab_discord.setHtml(self.get_discord_html())
+        tabs.addTab(tab_discord, "🤖 คำสั่ง Discord Bot")
+
+        # Tab 2: ฟังก์ชันเด่น & ระบบออโต้
+        tab_features = QTextBrowser()
+        tab_features.setOpenExternalLinks(True)
+        tab_features.setHtml(self.get_features_html())
+        tabs.addTab(tab_features, "🌟 ฟังก์ชันเด่น & ออโต้")
+
+        # Tab 3: ปุ่มคีย์ลัด & หน้าต่างโปรแกรม
+        tab_hotkeys = QTextBrowser()
+        tab_hotkeys.setOpenExternalLinks(True)
+        tab_hotkeys.setHtml(self.get_hotkeys_html())
+        tabs.addTab(tab_hotkeys, "⌨️ คีย์ลัด & GUI")
+
+        # Tab 4: ขั้นตอนการตั้งค่า
+        tab_setup = QTextBrowser()
+        tab_setup.setOpenExternalLinks(True)
+        tab_setup.setHtml(self.get_setup_html())
+        tabs.addTab(tab_setup, "⚙️ ขั้นตอนการตั้งค่า")
+
+        layout.addWidget(tabs)
+
+        # Bottom Bar
+        bottom_layout = QHBoxLayout()
+        hint_label = QLabel("💡 เคล็ดลับ: มาโครทำงานแบบ Background Mode สามารถพับหน้าต่าง FiveM เล่นอย่างอื่นขณะทำงานได้")
+        hint_label.setStyleSheet("font-size: 11px; color: #64748b;")
+        btn_close = QPushButton("ปิดหน้าต่าง (Close)")
+        btn_close.clicked.connect(self.accept)
+        bottom_layout.addWidget(hint_label)
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(btn_close)
+        layout.addLayout(bottom_layout)
+
+    def get_discord_html(self):
+        return """
+        <div style="font-family: 'Segoe UI', Tahoma, sans-serif; line-height: 1.6;">
+            <h2 style="color: #4f46e5; margin-top: 0;">📱 ตารางคำสั่งควบคุมผ่าน Discord Bot (Remote Commands)</h2>
+            <p style="color: #475569; font-size: 13px;">สามารถพิมพ์คำสั่งในห้องแชท Discord ที่ผูกบอทไว้ หรือส่งเป็น <b>DM (ข้อความส่วนตัว)</b> หาบอทได้ทันที โดย Prefix เริ่มต้นคือ <b>!</b></p>
+            
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px;">
+                <thead>
+                    <tr style="background-color: #4f46e5; color: white; text-align: left;">
+                        <th style="padding: 10px; border-top-left-radius: 6px;">คำสั่งหลัก</th>
+                        <th style="padding: 10px;">คำสั่งย่อ / ภาษาไทย</th>
+                        <th style="padding: 10px; border-top-right-radius: 6px;">การทำงานและผลลัพธ์</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#e0e7ff; color:#3730a3; padding:2px 6px; border-radius:4px; font-family:Consolas;">!help</b></td>
+                        <td style="padding: 8px 10px;">!คำสั่ง, !เมนู</td>
+                        <td style="padding: 8px 10px;">แสดงรายการคำสั่งช่วยเหลือและสถานะการทำงานทั้งหมด</td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#e0e7ff; color:#3730a3; padding:2px 6px; border-radius:4px; font-family:Consolas;">!screen</b></td>
+                        <td style="padding: 8px 10px;">!จอ, !ภาพ</td>
+                        <td style="padding: 8px 10px;">แคปภาพหน้าจอเกม FiveM แบบเรียลไทม์ส่งกลับมาในห้องแชท</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#fef3c7; color:#92400e; padding:2px 6px; border-radius:4px; font-family:Consolas;">!car</b></td>
+                        <td style="padding: 8px 10px;">!เบิกรถ, !spawn</td>
+                        <td style="padding: 8px 10px;">กด E ค้าง 2 วิ ➔ คลิก Select Vehicle ➔ รอขึ้นรถ 4 วิ ➔ <b>รัดเข็มขัดนิรภัย (B)</b></td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#dcfce7; color:#166534; padding:2px 6px; border-radius:4px; font-family:Consolas;">!drive</b></td>
+                        <td style="padding: 8px 10px;">!ขับออโต้, !autodrive</td>
+                        <td style="padding: 8px 10px;">กดปุ่ม - (ข) ➔ คลิกเปิด Auto Drive ➔ กด ESC ปิดวงล้ออัตโนมัติ</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#f3e8ff; color:#6b21a8; padding:2px 6px; border-radius:4px; font-family:Consolas;">!map1</b></td>
+                        <td style="padding: 8px 10px;">!mark1, !มาร์ค1</td>
+                        <td style="padding: 8px 10px;">เปิดแผนที่ ➔ เลื่อนหาแถบ <b>Mine Job 🚚</b> ➔ กด Enter ปักหมุดม่วง ➔ ปิดแผนที่</td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#fce7f3; color:#9d174d; padding:2px 6px; border-radius:4px; font-family:Consolas;">!map2</b></td>
+                        <td style="padding: 8px 10px;">!mark2, !พาวรถ</td>
+                        <td style="padding: 8px 10px;">เปิดแผนที่ ➔ หา Car Pound ➔ กดลูกศรขวาเป็น <b>❮ 2/2 ❯</b> ➔ ปักหมุดพาวรถ</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#e0f2fe; color:#075985; padding:2px 6px; border-radius:4px; font-family:Consolas;">!close</b></td>
+                        <td style="padding: 8px 10px;">!t, !ปิดกระเป๋า, !ปิด</td>
+                        <td style="padding: 8px 10px;">กดปุ่ม <b>T</b> เพื่อสั่งปิดหน้าต่างกระเป๋า/Inventory ทันที</td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#fef3c7; color:#92400e; padding:2px 6px; border-radius:4px; font-family:Consolas;">!discard</b></td>
+                        <td style="padding: 8px 10px;">!ทิ้งทอง, !gold</td>
+                        <td style="padding: 8px 10px;">เปิดกระเป๋า ลากทองทิ้งลงถังขยะ กดยืนยัน และเริ่มฟาร์มต่ออัตโนมัติ</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#ccfbf1; color:#115e59; padding:2px 6px; border-radius:4px; font-family:Consolas;">!store</b></td>
+                        <td style="padding: 8px 10px;">!เก็บเพชร</td>
+                        <td style="padding: 8px 10px;">เปิดท้ายรถและย้ายเพชรจากตัวลงท้ายรถอัตโนมัติ</td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#ffedd5; color:#9a3412; padding:2px 6px; border-radius:4px; font-family:Consolas;">!feed</b></td>
+                        <td style="padding: 8px 10px;">!กินข้าว, !กินน้ำ</td>
+                        <td style="padding: 8px 10px;">สั่งกดน้ำ (ช่อง 6) และอาหาร (ช่อง 7) ให้ตัวละครทันที</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#fee2e2; color:#991b1b; padding:2px 6px; border-radius:4px; font-family:Consolas;">!start / !stop</b></td>
+                        <td style="padding: 8px 10px;">!เริ่ม / !หยุด</td>
+                        <td style="padding: 8px 10px;">สั่งเริ่ม หรือ หยุดพักการทำงานของระบบมาโคร</td>
+                    </tr>
+                    <tr style="background-color: #ffffff;">
+                        <td style="padding: 8px 10px;"><b style="background:#e2e8f0; color:#334155; padding:2px 6px; border-radius:4px; font-family:Consolas;">!เข้าเกม [IP]</b></td>
+                        <td style="padding: 8px 10px;">!connect, !join</td>
+                        <td style="padding: 8px 10px;">สั่งเปิด FiveM และ Connect เข้าเซิร์ฟเวอร์ตามที่ระบุ</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        """
+
+    def get_features_html(self):
+        return """
+        <div style="font-family: 'Segoe UI', Tahoma, sans-serif; line-height: 1.6;">
+            <h2 style="color: #0f766e; margin-top: 0;">🌟 ฟังก์ชันเด่น & ระบบออโต้อัจฉริยะ (Features)</h2>
+            
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+                <h3 style="color: #8b5cf6; margin-top: 0;">🗺️ 1. ระบบมาร์คแมพนำทางอัตโนมัติ (!map1 & !map2)</h3>
+                <ul style="margin-bottom: 0; color: #334155;">
+                    <li><b>!map1 (จุดขุด Mine Job):</b> เปิดแผนที่ (P) ➔ เข้าหน้าแผนที่ (Enter) ➔ สแกนตรวจจับแถบ <b>Mine Job 🚚</b> ➔ ปักหมุด Waypoint สีม่วง ➔ กด P ออกจากแผนที่ทันที</li>
+                    <li><b>!map2 (พาวรถ Car Pound):</b> เปิดแผนที่ (P) ➔ สแกนหา <b>Car Pound</b> ➔ กดลูกศรขวาเพื่อเลือกเป็น <b>❮ 2/2 ❯</b> ➔ ปักหมุด Waypoint</li>
+                </ul>
+            </div>
+
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+                <h3 style="color: #0284c7; margin-top: 0;">🚗 2. ระบบเบิกรถและการเดินทางอัตโนมัติ (!car & !drive)</h3>
+                <ul style="margin-bottom: 0; color: #334155;">
+                    <li><b>!car (เบิกรถ):</b> กด E ค้าง 2.0 วินาที เพื่อเปิดการาจ ➔ เลือกการ์ดรถ ➔ สแกนคลิกปุ่ม Select Vehicle ➔ รอรถเกิดและขึ้นรถ 4.0 วินาที ➔ <b>กดปุ่ม B ลัดเข็มขัดนิรภัยอัตโนมัติ 🔒</b></li>
+                    <li><b>!drive (ขับออโต้):</b> กดปุ่ม <b>- (หรือ ข)</b> เปิดเมนูรถ ➔ คลิกปุ่ม Auto Drive ➔ <b>กด ESC 1 ครั้ง</b> เพื่อปิดหน้าต่างเมนูรถทันที</li>
+                </ul>
+            </div>
+
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+                <h3 style="color: #0d9488; margin-top: 0;">⛏️ 3. ระบบฟาร์มและจัดการไอเทม (Core Farming Engine)</h3>
+                <ul style="margin-bottom: 0; color: #334155;">
+                    <li><b>Background Mode:</b> ทำงานแบบเบื้องหลังเต็มรูปแบบ สามารถย่อหน้าต่าง FiveM หรือเล่นเกม/ทำงานอื่นได้โดยไม่โดนรบกวน</li>
+                    <li><b>ระบบทิ้งทอง (Auto-Discard Gold):</b> ตรวจสอบและทิ้งทองลงถังขยะเมื่อถึงจำนวนที่กำหนด (เช่น 20-40 ก้อน)</li>
+                    <li><b>ระบบเก็บเพชรลงรถ (Auto-Store Diamonds):</b> ย้ายเพชรจากตัวละครลงท้ายรถอัตโนมัติ</li>
+                    <li><b>ระบบกินข้าว/น้ำ (Auto-Feed):</b> ตรวจจับระดับ HUD หลอดอาหาร/น้ำ และกดใช้จากช่อง 6 (น้ำ) และช่อง 7 (อาหาร)</li>
+                </ul>
+            </div>
+        </div>
+        """
+
+    def get_hotkeys_html(self):
+        return """
+        <div style="font-family: 'Segoe UI', Tahoma, sans-serif; line-height: 1.6;">
+            <h2 style="color: #0284c7; margin-top: 0;">⌨️ ปุ่มคีย์ลัด & ปุ่มควบคุมบนหน้าต่างโปรแกรม</h2>
+            
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px;">
+                <thead>
+                    <tr style="background-color: #0284c7; color: white; text-align: left;">
+                        <th style="padding: 10px; width: 140px; border-top-left-radius: 6px;">ปุ่มลัด (Hotkey)</th>
+                        <th style="padding: 10px; border-top-right-radius: 6px;">หน้าที่และการทำงาน</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 10px;"><b style="background:#e0f2fe; color:#0369a1; padding:3px 8px; border-radius:4px; font-family:Consolas; font-size:14px;">F9</b></td>
+                        <td style="padding: 10px;"><b>เริ่ม / หยุดการทำงานของระบบมาโคร (Start / Stop Macro)</b></td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 10px;"><b style="background:#f1f5f9; color:#334155; padding:3px 8px; border-radius:4px; font-family:Consolas;">P</b></td>
+                        <td style="padding: 10px;">เปิด / ปิด แผนที่ (Pause Menu Map)</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 10px;"><b style="background:#f1f5f9; color:#334155; padding:3px 8px; border-radius:4px; font-family:Consolas;">- หรือ ข</b></td>
+                        <td style="padding: 10px;">เปิดเมนูควบคุมรถสำหรับสั่ง Auto Drive</td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 10px;"><b style="background:#f1f5f9; color:#334155; padding:3px 8px; border-radius:4px; font-family:Consolas;">E (ค้าง 2 วิ)</b></td>
+                        <td style="padding: 10px;">เปิดการาจเบิกรถ</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 10px;"><b style="background:#f1f5f9; color:#334155; padding:3px 8px; border-radius:4px; font-family:Consolas;">B</b></td>
+                        <td style="padding: 10px;">ลัด / ปลด เข็มขัดนิรภัย</td>
+                    </tr>
+                    <tr style="background-color: #ffffff;">
+                        <td style="padding: 10px;"><b style="background:#f1f5f9; color:#334155; padding:3px 8px; border-radius:4px; font-family:Consolas;">T</b></td>
+                        <td style="padding: 10px;">เปิด / ปิด หน้าต่างกระเป๋า (Inventory)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="color: #334155; margin-top: 18px;">🖥️ ปุ่มทดสอบบนแท็บตั้งค่า (Control Panel Buttons)</h3>
+            <ul style="color: #475569; font-size: 13px;">
+                <li><b>[ 📍 map1 (จุดขุด) ]:</b> กดทดสอบปักหมุดจุดขุด Mine Job</li>
+                <li><b>[ 🚗 map2 (พาวรถ) ]:</b> กดทดสอบปักหมุดพาวรถ Car Pound 2/2</li>
+                <li><b>[ 🚙 เบิกรถ ]:</b> กดทดสอบกระบวนการเบิกรถและลัดเข็มขัด</li>
+                <li><b>[ 🚘 ขับออโต้ ]:</b> กดทดสอบเปิด Auto Drive และกด ESC ปิดเมนู</li>
+                <li><b>[ 🎯 พิกัด ]:</b> กำหนดพิกัดคลิกเลือกจุดมาร์คด้วยตนเอง</li>
+                <li><b>[ 🔄 ออโต้ ]:</b> คืนค่าเป็นโหมดสแกนตรวจจับภาพอัตโนมัติ</li>
+            </ul>
+        </div>
+        """
+
+    def get_setup_html(self):
+        return """
+        <div style="font-family: 'Segoe UI', Tahoma, sans-serif; line-height: 1.6;">
+            <h2 style="color: #059669; margin-top: 0;">⚙️ ขั้นตอนการตั้งค่าเริ่มต้น (Setup Guide)</h2>
+            
+            <div style="background-color: #f8fafc; border-left: 4px solid #059669; padding: 12px 16px; margin-bottom: 14px; border-radius: 4px;">
+                <b style="color: #059669; font-size: 14px;">ขั้นตอนที่ 1: เตรียมหน้าต่างเกม FiveM</b>
+                <p style="color: #334155; margin: 4px 0 0 0; font-size: 13px;">ตั้งค่าเกม FiveM เป็นแบบ <b>Borderless Windowed</b> หรือ <b>Windowed</b> เพื่อให้ระบบ Background แคปภาพและส่งคำสั่งได้เสถียรที่สุด</p>
+            </div>
+
+            <div style="background-color: #f8fafc; border-left: 4px solid #0284c7; padding: 12px 16px; margin-bottom: 14px; border-radius: 4px;">
+                <b style="color: #0284c7; font-size: 14px;">ขั้นตอนที่ 2: ตั้งค่าหลอดอาหารและน้ำ (HUD Region)</b>
+                <p style="color: #334155; margin: 4px 0 0 0; font-size: 13px;">กดปุ่ม <b>[ เลือกพื้นที่หลอดอาหาร/น้ำ ]</b> แล้วลากคลุมหลอดอาหารและน้ำที่แสดงบนหน้าจอเกม</p>
+            </div>
+
+            <div style="background-color: #f8fafc; border-left: 4px solid #6366f1; padding: 12px 16px; margin-bottom: 14px; border-radius: 4px;">
+                <b style="color: #6366f1; font-size: 14px;">ขั้นตอนที่ 3: เชื่อมต่อ Discord Bot Remote</b>
+                <p style="color: #334155; margin: 4px 0 0 0; font-size: 13px;">ใส่ <b>Bot Token</b> และ <b>Channel ID</b> ในแท็บ <b>Discord</b> แล้วกดเปิดใช้งาน บอทจะออนไลน์และพร้อมรับคำสั่งจากมือถือหรือคอมพิวเตอร์เครื่องอื่นทันที</p>
+            </div>
+
+            <div style="background-color: #f8fafc; border-left: 4px solid #f59e0b; padding: 12px 16px; margin-bottom: 14px; border-radius: 4px;">
+                <b style="color: #d97706; font-size: 14px;">ขั้นตอนที่ 4: วางไอเทมในกระเป๋า</b>
+                <p style="color: #334155; margin: 4px 0 0 0; font-size: 13px;">วาง <b>น้ำไว้ที่ช่อง Hotkey 6</b> และ <b>อาหารไว้ที่ช่อง Hotkey 7</b> ตัวละครจะกดกินอัตโนมัติเมื่อค่าต่ำกว่าเกณฑ์ที่ตั้งไว้</p>
+            </div>
+        </div>
+        """
+
+# ==========================================
 # MAIN GUI WINDOW
 # ==========================================
 class MainWindow(QMainWindow):
@@ -4111,6 +4382,10 @@ class MainWindow(QMainWindow):
         title_label = QLabel("มาโครทิ้งทอง FiveM Background")
         title_label.setObjectName("Title")
 
+        self.readme_btn = QPushButton("📖 วิธีใช้งาน (Readme)")
+        self.readme_btn.setStyleSheet("QPushButton { background-color: #f59e0b; border: none; border-radius: 12px; color: white; font-size: 11px; font-weight: bold; padding: 4px 12px; } QPushButton:hover { background-color: #d97706; }")
+        self.readme_btn.clicked.connect(self.show_readme_dialog)
+
         self.update_btn = QPushButton(f"🔄 เช็คอัปเดต (v{get_current_version()})")
         self.update_btn.setStyleSheet("QPushButton { background-color: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 12px; color: #334155; font-size: 11px; font-weight: bold; padding: 4px 10px; } QPushButton:hover { background-color: #e2e8f0; color: #0f172a; }")
         self.update_btn.clicked.connect(self.check_update_manually)
@@ -4126,6 +4401,7 @@ class MainWindow(QMainWindow):
         status_bar_layout.addWidget(self.status_text)
         header_layout.addWidget(title_label)
         header_layout.addStretch()
+        header_layout.addWidget(self.readme_btn)
         header_layout.addWidget(self.update_btn)
         header_layout.addWidget(self.status_bar)
         main_layout.addLayout(header_layout)
@@ -5397,6 +5673,11 @@ class MainWindow(QMainWindow):
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.check_update_silently)
         self.update_timer.start(15 * 60 * 1000)
+
+    def show_readme_dialog(self):
+        """Open the rich Readme & User Manual Dialog."""
+        dialog = ReadmeDialog(self)
+        dialog.exec()
 
     def check_update_silently(self):
         self.silent_update_worker = RealtimeUpdateWorker(mode="check")
