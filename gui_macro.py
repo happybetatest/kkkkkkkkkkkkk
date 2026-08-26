@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.8"
+CURRENT_APP_VERSION = "1.3.9"
 
 def get_current_version():
     try:
@@ -321,15 +321,19 @@ class DiscordRemoteWorker(QObject):
         super().__init__(parent)
         self.bot_token = ""
         self.admin_user_id = ""
+        self.command_prefix = "!"
+        self.bot_id = ""
+        self.bot_name = "Bot"
         self.is_enabled = False
         self.is_running = False
         self.loop = None
         self.thread = None
 
-    def configure(self, token, admin_id, enabled):
+    def configure(self, token, admin_id, enabled, prefix="!"):
         self.bot_token = str(token).strip()
         self.admin_user_id = str(admin_id).strip()
         self.is_enabled = bool(enabled)
+        self.command_prefix = str(prefix).strip() or "!"
 
     def start_bot(self):
         if not self.bot_token:
@@ -422,8 +426,10 @@ class DiscordRemoteWorker(QObject):
                                 elif op == 0:
                                     if t == "READY":
                                         username = d.get("user", {}).get("username", "Bot")
+                                        self.bot_id = str(d.get("user", {}).get("id", ""))
+                                        self.bot_name = username
                                         self.status_signal.emit(True, f"ออนไลน์: {username}")
-                                        self.log_signal.emit(f"[Discord Remote] เชื่อมต่อบอทสำเร็จ: {username}")
+                                        self.log_signal.emit(f"[Discord Remote] เชื่อมต่อบอทสำเร็จ: {username} (Prefix: '{self.command_prefix}')")
 
                                     elif t == "MESSAGE_CREATE":
                                         # Process incoming command
@@ -482,25 +488,54 @@ class DiscordRemoteWorker(QObject):
             if not matched:
                 return
 
-        cmd = content.lower()
-        if cmd.startswith("!") or cmd.startswith("/"):
-            cmd = cmd[1:].strip()
+        content_clean = content.strip()
+        bot_mention = f"<@{self.bot_id}>" if self.bot_id else None
+        bot_mention_nick = f"<@!{self.bot_id}>" if self.bot_id else None
+        is_direct_message = bool(d.get("guild_id") is None)
+
+        matched_prefix = False
+        extracted_cmd = ""
+
+        # 1. Mention check: @BOT DIS check or @Bothxp check
+        if bot_mention and content_clean.startswith(bot_mention):
+            matched_prefix = True
+            extracted_cmd = content_clean[len(bot_mention):].strip()
+        elif bot_mention_nick and content_clean.startswith(bot_mention_nick):
+            matched_prefix = True
+            extracted_cmd = content_clean[len(bot_mention_nick):].strip()
+        # 2. Configured Prefix check: e.g. prefix is "!" or "?" or "!2"
+        elif content_clean.lower().startswith(self.command_prefix.lower()):
+            matched_prefix = True
+            extracted_cmd = content_clean[len(self.command_prefix):].strip()
+        # 3. Direct Message (DM) to this specific bot: always accepts commands
+        elif is_direct_message:
+            matched_prefix = True
+            extracted_cmd = content_clean
+            if extracted_cmd.startswith("!") or extracted_cmd.startswith("/") or extracted_cmd.startswith("?"):
+                extracted_cmd = extracted_cmd[1:].strip()
+
+        if not matched_prefix or not extracted_cmd:
+            return
+
+        cmd = extracted_cmd.lower()
+        pfx = self.command_prefix
+        tag_prefix = f"🤖 **[{self.bot_name}]**"
 
         # 1. HELP COMMAND
         if cmd in ("help", "คำสั่ง", "เมนู", "menu"):
             help_text = (
-                "🎮 **FiveM Farming Macro — เมนูคำสั่งควบคุมระยะไกล**\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📦 `!check` หรือ `!bag` : **เปิดกระเป๋า ตรวจเช็คทอง/เพชร และถ่ายรูปส่งกลับมา**\n"
-                "🗑️ `!discard` หรือ `!ทิ้งทอง` : **สั่งทิ้งทอง กดยืนยัน และกลับไปเริ่มฟาร์มต่อให้อัตโนมัติ**\n"
-                "📸 `!screen` : ถ่ายภาพหน้าจอ FiveM สดๆ\n"
-                "📊 `!status` : ตรวจสอบสถานะการทำงานปัจจุบัน\n"
-                "🟢 `!start` : เริ่มการทำงานของบอท (F9)\n"
-                "🔴 `!stop` : หยุดพักบอทชั่วคราว (F9)\n"
-                "🍗 `!feed` : สั่งให้ตัวละครกินน้ำ (ช่อง 6) และอาหาร (ช่อง 7)\n"
-                "💎 `!store` : สั่งให้เริ่มกระบวนการเก็บเพชรลงรถ\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "*คำสั่งทั้งหมดล็อกสิทธิ์ให้เจ้าของใช้งานได้เท่านั้น 🔒*"
+                f"🎮 **FiveM Farming [{self.bot_name}] — เมนูคำสั่งควบคุมระยะไกล**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 `{pfx}check` หรือ `{pfx}bag` : **เปิดกระเป๋า ตรวจเช็คทอง/เพชร และถ่ายรูปส่งกลับมา**\n"
+                f"🗑️ `{pfx}discard` หรือ `{pfx}ทิ้งทอง` : **สั่งทิ้งทอง กดยืนยัน และกลับไปเริ่มฟาร์มต่อให้อัตโนมัติ**\n"
+                f"📸 `{pfx}screen` : ถ่ายภาพหน้าจอ FiveM สดๆ\n"
+                f"📊 `{pfx}status` : ตรวจสอบสถานะการทำงานปัจจุบัน\n"
+                f"🟢 `{pfx}start` : เริ่มการทำงานของบอท (F9)\n"
+                f"🔴 `{pfx}stop` : หยุดพักบอทชั่วคราว (F9)\n"
+                f"🍗 `{pfx}feed` : สั่งให้ตัวละครกินน้ำ (ช่อง 6) และอาหาร (ช่อง 7)\n"
+                f"💎 `{pfx}store` : สั่งให้เริ่มกระบวนการเก็บเพชรลงรถ\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"*Prefix ปัจจุบัน: `{pfx}` (หรือแท็ก @{self.bot_name} ได้โดยตรง) 🔒*"
             )
             send_discord_rest_message(self.bot_token, channel_id, help_text, reply_to_message_id=msg_id)
             return
@@ -509,7 +544,7 @@ class DiscordRemoteWorker(QObject):
         if cmd in ("check", "bag", "กระเป๋า", "ทอง", "gold"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
-                "⏳ กำลังสลับไป FiveM และเปิดกระเป๋าเพื่อถ่ายรูป กรุณารอสักครู่...",
+                f"{tag_prefix} ⏳ กำลังสลับไป FiveM และเปิดกระเป๋าเพื่อถ่ายรูป กรุณารอสักครู่...",
                 reply_to_message_id=msg_id
             )
             future = asyncio.Future()
@@ -527,7 +562,7 @@ class DiscordRemoteWorker(QObject):
                 status_info = res.get("status_info", "ปกติ")
 
                 caption = (
-                    f"📦 **[ผลการตรวจสอบกระเป๋า FiveM]**\n"
+                    f"{tag_prefix} 📦 **[ผลการตรวจสอบกระเป๋า FiveM]**\n"
                     f"• แร่ทอง: {gold_info}\n"
                     f"• สถานะบอท: {status_info}\n"
                     f"• เวลา: <t:{int(time.time())}:T>"
@@ -549,7 +584,7 @@ class DiscordRemoteWorker(QObject):
             except asyncio.TimeoutError:
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    "⚠️ คำสั่งหมดเวลา: ไม่สามารถเปิดกระเป๋าได้ทันเวลา กรุณาเช็คว่าเปิด FiveM อยู่หรือไม่",
+                    f"{tag_prefix} ⚠️ คำสั่งหมดเวลา: ไม่สามารถเปิดกระเป๋าได้ทันเวลา กรุณาเช็คว่าเปิด FiveM อยู่หรือไม่",
                     reply_to_message_id=msg_id
                 )
             return
@@ -558,7 +593,7 @@ class DiscordRemoteWorker(QObject):
         if cmd in ("discard", "dump", "drop", "ทิ้งทอง", "ทิ้ง"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
-                "🗑️ กำลังเปิดกระเป๋าเพื่อกดทิ้งทอง และเริ่มฟาร์มต่อให้อัตโนมัติ...",
+                f"{tag_prefix} 🗑️ กำลังเปิดกระเป๋าเพื่อกดทิ้งทอง และเริ่มฟาร์มต่อให้อัตโนมัติ...",
                 reply_to_message_id=msg_id
             )
             future = asyncio.Future()
@@ -575,7 +610,7 @@ class DiscordRemoteWorker(QObject):
                 msg_text = res.get("message", "ดำเนินการเสร็จสิ้น")
                 img_path = res.get("image_path")
 
-                reply_text = f"✅ **{msg_text}**" if success else f"⚠️ **{msg_text}**"
+                reply_text = f"{tag_prefix} ✅ **{msg_text}**" if success else f"{tag_prefix} ⚠️ **{msg_text}**"
                 send_discord_rest_message(
                     self.bot_token, channel_id,
                     content=reply_text,
@@ -592,7 +627,7 @@ class DiscordRemoteWorker(QObject):
             except asyncio.TimeoutError:
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    "⚠️ คำสั่งหมดเวลา: การทิ้งทองใช้เวลานานเกินกำหนด",
+                    f"{tag_prefix} ⚠️ คำสั่งหมดเวลา: การทิ้งทองใช้เวลานานเกินกำหนด",
                     reply_to_message_id=msg_id
                 )
             return
@@ -613,7 +648,7 @@ class DiscordRemoteWorker(QObject):
                 if img_path and os.path.isfile(img_path):
                     send_discord_rest_message(
                         self.bot_token, channel_id,
-                        content=f"📸 **ภาพหน้าจอ FiveM สดๆ** (<t:{int(time.time())}:T>)",
+                        content=f"{tag_prefix} 📸 **ภาพหน้าจอ FiveM สดๆ** (<t:{int(time.time())}:T>)",
                         file_path=img_path,
                         reply_to_message_id=msg_id
                     )
@@ -624,13 +659,13 @@ class DiscordRemoteWorker(QObject):
                 else:
                     send_discord_rest_message(
                         self.bot_token, channel_id,
-                        "⚠️ ไม่สามารถจับภาพหน้าจอ FiveM ได้ (หน้าต่างอาจถูกย่อ)",
+                        f"{tag_prefix} ⚠️ ไม่สามารถจับภาพหน้าจอ FiveM ได้ (หน้าต่างอาจถูกย่อ)",
                         reply_to_message_id=msg_id
                     )
             except asyncio.TimeoutError:
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    "⚠️ การถ่ายภาพหน้าจอหมดเวลา",
+                    f"{tag_prefix} ⚠️ การถ่ายภาพหน้าจอหมดเวลา",
                     reply_to_message_id=msg_id
                 )
             return
@@ -647,7 +682,7 @@ class DiscordRemoteWorker(QObject):
             res = await future
             send_discord_rest_message(
                 self.bot_token, channel_id,
-                f"🟢 **{res.get('message', 'เริ่มการทำงานของบอทแล้ว')}**",
+                f"{tag_prefix} 🟢 **{res.get('message', 'เริ่มการทำงานของบอทแล้ว')}**",
                 reply_to_message_id=msg_id
             )
             return
@@ -664,7 +699,7 @@ class DiscordRemoteWorker(QObject):
             res = await future
             send_discord_rest_message(
                 self.bot_token, channel_id,
-                f"🔴 **{res.get('message', 'หยุดพักบอทชั่วคราวแล้ว')}**",
+                f"{tag_prefix} 🔴 **{res.get('message', 'หยุดพักบอทชั่วคราวแล้ว')}**",
                 reply_to_message_id=msg_id
             )
             return
@@ -673,7 +708,7 @@ class DiscordRemoteWorker(QObject):
         if cmd in ("feed", "กินข้าว", "กินน้ำ", "อาหาร", "กิน"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
-                "🍗 กำลังเริ่มกระบวนการกินน้ำ (ช่อง 6) และอาหาร (ช่อง 7)...",
+                f"{tag_prefix} 🍗 กำลังเริ่มกระบวนการกินน้ำ (ช่อง 6) และอาหาร (ช่อง 7)...",
                 reply_to_message_id=msg_id
             )
             future = asyncio.Future()
@@ -688,7 +723,7 @@ class DiscordRemoteWorker(QObject):
                 res = await asyncio.wait_for(future, timeout=30.0)
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    f"🍗 **{res.get('message', 'ป้อนอาหารและน้ำเรียบร้อยแล้ว')}**",
+                    f"{tag_prefix} 🍗 **{res.get('message', 'ป้อนอาหารและน้ำเรียบร้อยแล้ว')}**",
                     reply_to_message_id=msg_id
                 )
                 if wait_id:
@@ -696,7 +731,7 @@ class DiscordRemoteWorker(QObject):
             except asyncio.TimeoutError:
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    "⚠️ กระบวนการกินอาหารหมดเวลา",
+                    f"{tag_prefix} ⚠️ กระบวนการกินอาหารหมดเวลา",
                     reply_to_message_id=msg_id
                 )
             return
@@ -705,7 +740,7 @@ class DiscordRemoteWorker(QObject):
         if cmd in ("store", "เก็บเพชร", "เก็บของ", "รถ", "diamond", "เพชร"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
-                "💎 กำลังเริ่มกระบวนการเก็บเพชรลงท้ายรถ...",
+                f"{tag_prefix} 💎 กำลังเริ่มกระบวนการเก็บเพชรลงท้ายรถ...",
                 reply_to_message_id=msg_id
             )
             future = asyncio.Future()
@@ -722,7 +757,7 @@ class DiscordRemoteWorker(QObject):
                 msg_text = res.get("message", "กระบวนการเก็บเพชรเสร็จสิ้น")
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    content=f"💎 **{msg_text}**",
+                    content=f"{tag_prefix} 💎 **{msg_text}**",
                     file_path=img_path,
                     reply_to_message_id=msg_id
                 )
@@ -736,7 +771,7 @@ class DiscordRemoteWorker(QObject):
             except asyncio.TimeoutError:
                 send_discord_rest_message(
                     self.bot_token, channel_id,
-                    "⚠️ กระบวนการเก็บเพชรหมดเวลา",
+                    f"{tag_prefix} ⚠️ กระบวนการเก็บเพชรหมดเวลา",
                     reply_to_message_id=msg_id
                 )
             return
@@ -752,7 +787,7 @@ class DiscordRemoteWorker(QObject):
             self.action_requested.emit("get_status", callback)
             res = await future
             status_text = (
-                "📊 **สถานะระบบ FiveM Farming Macro**\n"
+                f"{tag_prefix} 📊 **สถานะระบบ FiveM Farming Macro**\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"• สถานะบอท: {res.get('running_text', 'ไม่ระบุ')}\n"
                 f"• การเชื่อมต่อ FiveM: {res.get('fivem_connected', 'ไม่ระบุ')}\n"
@@ -3266,6 +3301,18 @@ class MainWindow(QMainWindow):
         self.discord_admin_input.setText(self.discord_admin_id)
         self.discord_admin_input.editingFinished.connect(self.on_discord_remote_edited)
 
+        prefix_row = QHBoxLayout()
+        prefix_lbl = QLabel("Prefix คำสั่ง:")
+        prefix_lbl.setStyleSheet("font-size: 11px; color: #475569; font-weight: bold;")
+        self.discord_prefix_input = QLineEdit()
+        self.discord_prefix_input.setPlaceholderText("เช่น ! หรือ ? หรือ !2")
+        self.discord_prefix_input.setText(self.discord_command_prefix)
+        self.discord_prefix_input.setFixedWidth(80)
+        self.discord_prefix_input.editingFinished.connect(self.on_discord_remote_edited)
+        prefix_row.addWidget(prefix_lbl)
+        prefix_row.addWidget(self.discord_prefix_input)
+        prefix_row.addStretch()
+
         remote_status_layout = QHBoxLayout()
         self.discord_status_lbl = QLabel("สถานะ: 🔴 ออฟไลน์")
         self.discord_status_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
@@ -3279,6 +3326,7 @@ class MainWindow(QMainWindow):
         remote_layout.addWidget(self.discord_remote_cb)
         remote_layout.addWidget(self.discord_token_input)
         remote_layout.addWidget(self.discord_admin_input)
+        remote_layout.addLayout(prefix_row)
         remote_layout.addLayout(remote_status_layout)
         config_tab_layout.addWidget(remote_box)
 
@@ -3499,7 +3547,12 @@ class MainWindow(QMainWindow):
             self.discord_remote.status_signal.connect(self.on_discord_remote_status)
             self.discord_remote.log_signal.connect(self.write_log)
             self.discord_remote.action_requested.connect(self.on_discord_remote_action)
-            self.discord_remote.configure(self.discord_bot_token, self.discord_admin_id, self.discord_remote_enabled)
+            self.discord_remote.configure(
+                self.discord_bot_token,
+                self.discord_admin_id,
+                self.discord_remote_enabled,
+                prefix=self.discord_command_prefix,
+            )
             if self.discord_remote_enabled and self.discord_bot_token:
                 self.discord_remote.start_bot()
 
@@ -3740,6 +3793,12 @@ class MainWindow(QMainWindow):
 
     def load_private_settings(self):
         try:
+            is_beta_app = (
+                "beta" in sys.argv[0].lower()
+                or "beta" in os.getcwd().lower()
+                or os.environ.get("FIVEM_FARMING_CHANNEL") == "beta"
+            )
+            default_prefix = "?" if is_beta_app else "!"
             if os.path.exists(self.private_settings_path):
                 with open(self.private_settings_path, "r", encoding="utf-8") as stream:
                     private_data = json.load(stream)
@@ -3753,11 +3812,13 @@ class MainWindow(QMainWindow):
                 self.discord_bot_token = str(private_data.get("discord_bot_token", "")).strip()
                 self.discord_admin_id = str(private_data.get("discord_admin_id", "")).strip()
                 self.discord_remote_enabled = bool(private_data.get("discord_remote_enabled", False))
+                self.discord_command_prefix = str(private_data.get("discord_command_prefix", default_prefix)).strip() or default_prefix
         except Exception:
             self.discord_webhook_url = ""
             self.discord_bot_token = ""
             self.discord_admin_id = ""
             self.discord_remote_enabled = False
+            self.discord_command_prefix = default_prefix
 
     def save_private_settings(self):
         try:
@@ -3770,6 +3831,7 @@ class MainWindow(QMainWindow):
                         "discord_bot_token": self.discord_bot_token,
                         "discord_admin_id": self.discord_admin_id,
                         "discord_remote_enabled": self.discord_remote_enabled,
+                        "discord_command_prefix": self.discord_command_prefix,
                     },
                     stream, indent=2, ensure_ascii=False
                 )
@@ -4026,6 +4088,7 @@ class MainWindow(QMainWindow):
                 self.discord_bot_token,
                 self.discord_admin_id,
                 self.discord_remote_enabled,
+                prefix=self.discord_command_prefix,
             )
             if self.discord_remote_enabled:
                 self.discord_remote.start_bot()
@@ -4035,12 +4098,14 @@ class MainWindow(QMainWindow):
     def on_discord_remote_edited(self):
         self.discord_bot_token = self.discord_token_input.text().strip()
         self.discord_admin_id = self.discord_admin_input.text().strip()
+        self.discord_command_prefix = self.discord_prefix_input.text().strip() or "!"
         self.save_private_settings()
         if self.discord_remote:
             self.discord_remote.configure(
                 self.discord_bot_token,
                 self.discord_admin_id,
                 self.discord_remote_enabled,
+                prefix=self.discord_command_prefix,
             )
 
     def restart_discord_bot(self):
