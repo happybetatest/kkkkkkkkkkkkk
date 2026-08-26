@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.7"
+CURRENT_APP_VERSION = "1.3.8"
 
 def get_current_version():
     try:
@@ -1871,33 +1871,18 @@ class MacroWorker(QThread):
         bag_gray = cv2.cvtColor(bag_crop, cv2.COLOR_BGR2GRAY)
         dark_mask = cv2.inRange(bag_gray, 0, 88)
         dark_ratio = cv2.countNonZero(dark_mask) / float(dark_mask.size)
-        connected_mask = cv2.morphologyEx(
-            dark_mask,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)),
-        )
-        contours, _ = cv2.findContours(
-            connected_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        largest_dark_ratio = (
-            max((cv2.contourArea(contour) for contour in contours), default=0.0)
-            / float(dark_mask.size)
-        )
-        if dark_ratio < 0.15 or largest_dark_ratio < 0.06:
+        if dark_ratio < 0.15:
             return False
-
-        # If a large prominent dark inventory container is present
-        if dark_ratio >= 0.22 and largest_dark_ratio >= 0.09:
-            return True
 
         x_range = (x_start / w_img, x_end / w_img)
         y_range = (scan_y_start / h_img, y_end / h_img)
         for template_path, threshold in (
-            ("templates/gold_ore.png", 0.65),
-            ("templates/diamond_icon.png", 0.70),
-            ("templates/gold.png", 0.65),
-            ("templates/all.png", 0.60),
-            ("templates/destroy.png", 0.60),
+            ("templates/all.png", 0.65),
+            ("templates/destroy.png", 0.65),
+            ("templates/gold_ore.png", 0.70),
+            ("templates/diamond_icon.png", 0.75),
+            ("templates/gold.png", 0.70),
+            ("templates/diamond_trunk.png", 0.70),
         ):
             result = self.find_image(
                 bg_img,
@@ -1912,7 +1897,7 @@ class MacroWorker(QThread):
                 if my < int(h_img * 0.24) and mx > int(w_img * 0.65):
                     continue
                 return True
-        return largest_dark_ratio >= 0.08
+        return False
 
     def ensure_inventory_open(self, log_prefix="[ระบบ]"):
         if self.is_inventory_open():
