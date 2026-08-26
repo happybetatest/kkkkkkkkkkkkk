@@ -201,41 +201,76 @@ class Input_I(ctypes.Union):
 class Input(ctypes.Structure):
     _fields_ = [("type", ctypes.c_ulong), ("ii", Input_I)]
 
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_SCANCODE = 0x0008
 KEYEVENTF_KEYUP = 0x0002
 
-SCANCODES = {"esc": 0x01, "x": 0x2D, "6": 0x07, "7": 0x08, "e": 0x12, "t": 0x14, "h": 0x23}
+SCANCODES = {
+    "esc": 0x01, "escape": 0x01,
+    "1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06, "6": 0x07, "7": 0x08, "8": 0x09, "9": 0x0A, "0": 0x0B,
+    "-": 0x0C, "ข": 0x0C, "_": 0x0C, "=": 0x0D,
+    "q": 0x10, "w": 0x11, "e": 0x12, "r": 0x13, "t": 0x14, "y": 0x15, "u": 0x16, "i": 0x17, "o": 0x18, "p": 0x19,
+    "a": 0x1E, "s": 0x1F, "d": 0x20, "f": 0x21, "g": 0x22, "h": 0x23, "j": 0x24, "k": 0x25, "l": 0x26,
+    "z": 0x2C, "x": 0x2D, "c": 0x2E, "v": 0x2F, "b": 0x30, "n": 0x31, "m": 0x32,
+    "enter": 0x1C, "return": 0x1C, "space": 0x39, "backspace": 0x0E, "tab": 0x0F,
+    "f1": 0x3B, "f2": 0x3C, "f3": 0x3D, "f4": 0x3E, "f5": 0x3F, "f6": 0x40,
+    "f7": 0x41, "f8": 0x42, "f9": 0x43, "f10": 0x44, "f11": 0x57, "f12": 0x58,
+    "up": (0x48, True), "down": (0x50, True), "left": (0x4B, True), "right": (0x4D, True),
+}
 
-def press_key(scancode):
+def resolve_scancode(key_name):
+    name = str(key_name).strip().lower()
+    if name in SCANCODES:
+        val = SCANCODES[name]
+        if isinstance(val, tuple):
+            return val
+        return (val, False)
+    if len(name) == 1:
+        try:
+            vk = ctypes.windll.user32.VkKeyScanW(ord(name[0])) & 0xFF
+            sc = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+            if sc > 0:
+                return (sc, False)
+        except Exception:
+            pass
+    return (None, False)
+
+def press_key(scancode, is_extended=False):
     extra = ctypes.c_ulong(0)
     ii_ = Input_I()
-    ii_.ki = KeyBdInput(0, scancode, KEYEVENTF_SCANCODE, 0, ctypes.pointer(extra))
+    flags = KEYEVENTF_SCANCODE
+    if is_extended:
+        flags |= KEYEVENTF_EXTENDEDKEY
+    ii_.ki = KeyBdInput(0, scancode, flags, 0, ctypes.pointer(extra))
     x = Input(ctypes.c_ulong(1), ii_)
     ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
-def release_key(scancode):
+def release_key(scancode, is_extended=False):
     extra = ctypes.c_ulong(0)
     ii_ = Input_I()
-    ii_.ki = KeyBdInput(0, scancode, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0, ctypes.pointer(extra))
+    flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP
+    if is_extended:
+        flags |= KEYEVENTF_EXTENDEDKEY
+    ii_.ki = KeyBdInput(0, scancode, flags, 0, ctypes.pointer(extra))
     x = Input(ctypes.c_ulong(1), ii_)
     ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
 def send_key_direct(key_name, duration=0.10):
-    scancode = SCANCODES.get(key_name.lower())
+    scancode, is_extended = resolve_scancode(key_name)
     if scancode is not None:
-        press_key(scancode)
+        press_key(scancode, is_extended)
         time.sleep(duration)
-        release_key(scancode)
+        release_key(scancode, is_extended)
 
 def press_key_hold(key_name):
-    scancode = SCANCODES.get(key_name.lower())
+    scancode, is_extended = resolve_scancode(key_name)
     if scancode is not None:
-        press_key(scancode)
+        press_key(scancode, is_extended)
 
 def release_key_hold(key_name):
-    scancode = SCANCODES.get(key_name.lower())
+    scancode, is_extended = resolve_scancode(key_name)
     if scancode is not None:
-        release_key(scancode)
+        release_key(scancode, is_extended)
 
 # ==========================================
 # DISCORD REMOTE CONTROL ENGINE (EMBEDDED)
@@ -340,7 +375,7 @@ class DiscordRemoteWorker(QObject):
             self.status_signal.emit(False, "ยังไม่ได้ใส่ Bot Token")
             return
 
-        if self.is_running:
+        if self.is_running or (self.thread and self.thread.is_alive()):
             return
 
         self.is_running = True
@@ -361,11 +396,28 @@ class DiscordRemoteWorker(QObject):
         asyncio.set_event_loop(self.loop)
         try:
             self.loop.run_until_complete(self._gateway_loop())
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
         except Exception as e:
             if self.is_running:
                 self.status_signal.emit(False, f"ข้อผิดพลาด: {e}")
                 self.log_signal.emit(f"[Discord Remote] การเชื่อมต่อขัดข้อง: {e}")
         finally:
+            try:
+                # Cancel and collect all pending tasks
+                pending = [t for t in asyncio.all_tasks(self.loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.loop.close()
+                except Exception:
+                    pass
             self.is_running = False
             self.status_signal.emit(False, "ออฟไลน์")
 
@@ -373,6 +425,7 @@ class DiscordRemoteWorker(QObject):
         gateway_url = "wss://gateway.discord.gg/?v=10&encoding=json"
         
         while self.is_running:
+            heartbeat_task = None
             try:
                 if not AIOHTTP_AVAILABLE:
                     self.status_signal.emit(False, "จำเป็นต้องมี aiohttp")
@@ -380,7 +433,6 @@ class DiscordRemoteWorker(QObject):
 
                 async with aiohttp.ClientSession() as session:
                     async with session.ws_connect(gateway_url, ssl=HTTPS_CONTEXT) as ws:
-                        heartbeat_task = None
                         seq = None
 
                         async for msg in ws:
@@ -400,10 +452,11 @@ class DiscordRemoteWorker(QObject):
                                 # OP 10: HELLO -> Start Heartbeat & Identify
                                 if op == 10:
                                     interval_ms = d.get("heartbeat_interval", 41250)
+                                    if heartbeat_task and not heartbeat_task.done():
+                                        heartbeat_task.cancel()
                                     heartbeat_task = asyncio.create_task(self._heartbeat(ws, interval_ms / 1000.0, seq))
                                     
                                     # Send Identify (Op 2)
-                                    # Intents: 33280 = GUILD_MESSAGES (512) + DIRECT_MESSAGES (4096) + MESSAGE_CONTENT (32768) + GUILDS (1) = 37377
                                     identify_payload = {
                                         "op": 2,
                                         "d": {
@@ -432,25 +485,31 @@ class DiscordRemoteWorker(QObject):
                                         self.log_signal.emit(f"[Discord Remote] เชื่อมต่อบอทสำเร็จ: {username} (Prefix: '{self.command_prefix}')")
 
                                     elif t == "MESSAGE_CREATE":
-                                        # Process incoming command
                                         asyncio.create_task(self._handle_message(d))
 
                             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                                 break
 
-                        if heartbeat_task:
-                            heartbeat_task.cancel()
-
+            except asyncio.CancelledError:
+                break
             except Exception as conn_err:
                 if self.is_running:
                     self.status_signal.emit(False, f"กำลังต่อใหม่ ({conn_err})")
                     self.log_signal.emit(f"[Discord Remote] หลุดการเชื่อมต่อ กำลังเชื่อมต่อใหม่ใน 5 วินาที: {conn_err}")
-                    await asyncio.sleep(5.0)
+                    try:
+                        await asyncio.sleep(5.0)
+                    except asyncio.CancelledError:
+                        break
+            finally:
+                if heartbeat_task and not heartbeat_task.done():
+                    heartbeat_task.cancel()
 
     async def _heartbeat(self, ws, interval_seconds, current_seq):
         try:
-            while self.is_running:
+            while self.is_running and not ws.closed:
                 await asyncio.sleep(interval_seconds)
+                if ws.closed:
+                    break
                 hb_payload = {"op": 1, "d": current_seq}
                 await ws.send_str(json.dumps(hb_payload))
         except asyncio.CancelledError:
@@ -529,7 +588,10 @@ class DiscordRemoteWorker(QObject):
                 f"🎮 **FiveM Farming [{self.bot_name}] — เมนูคำสั่งควบคุมระยะไกล**\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🚀 `{pfx}เข้าเกม [IP/cfx]` : **สั่งเปิด FiveM และเชื่อมต่อเข้าเซิร์ฟเวอร์ทันที**\n"
-                f"📍 `{pfx}mark` หรือ `{pfx}มาร์คแมพ` : **เปิดแผนที่ (P) และปักหมุด Waypoint จุดขุดให้อัตโนมัติ**\n"
+                f"📍 `{pfx}map1` : **เปิดแผนที่ (P) และปักหมุดจุด Mine Job ให้อัตโนมัติ**\n"
+                f"🚗 `{pfx}map2` : **เปิดแผนที่ (P) และปักหมุดพาวรถ (Car Pound 2/2) ให้อัตโนมัติ**\n"
+                f"🚙 `{pfx}car` หรือ `{pfx}เบิกรถ` : **กด E ค้าง 2วิ ➔ เลือกรถ ➔ กด Select Vehicle**\n"
+                f"🚘 `{pfx}drive` หรือ `{pfx}ขับออโต้` : **กด '-' (ข) ➔ คลิกเปิด Auto Drive อัตโนมัติ**\n"
                 f"📦 `{pfx}check` หรือ `{pfx}bag` : **เปิดกระเป๋า ตรวจเช็คทอง/เพชร และถ่ายรูปส่งกลับมา**\n"
                 f"🗑️ `{pfx}discard` หรือ `{pfx}ทิ้งทอง` : **สั่งทิ้งทอง กดยืนยัน และกลับไปเริ่มฟาร์มต่อให้อัตโนมัติ**\n"
                 f"📸 `{pfx}screen` : ถ่ายภาพหน้าจอ FiveM สดๆ\n"
@@ -830,11 +892,11 @@ class DiscordRemoteWorker(QObject):
             send_discord_rest_message(self.bot_token, channel_id, status_text, reply_to_message_id=msg_id)
             return
 
-        # 11. MARK MAP
-        if main_cmd in ("mark", "map", "มาร์ค", "มาร์คแมพ", "ปักหมุด", "ทาง", "waypoint"):
+        # 11. MARK MAP (map1 / mark1 / mark / map / มาร์คแมพ)
+        if main_cmd in ("map1", "mark1", "map", "mark", "มาร์ค", "มาร์ค1", "แมพ1", "มาร์คแมพ", "ปักหมุด", "ทาง", "waypoint"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
-                f"{tag_prefix} 📍 กำลังเปิดแผนที่ (P) และปักหมุด Waypoint จุดขุด...",
+                f"{tag_prefix} 📍 กำลังเปิดแผนที่ (P) และปักหมุด Waypoint จุด Mine Job...",
                 reply_to_message_id=msg_id
             )
             future = asyncio.Future()
@@ -866,6 +928,126 @@ class DiscordRemoteWorker(QObject):
                 send_discord_rest_message(
                     self.bot_token, channel_id,
                     f"{tag_prefix} ⚠️ กระบวนการมาร์คแมพหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 12. MARK MAP 2: CAR POUND (map2 / mark2 / พาวรถ / car / car_pound)
+        if main_cmd in ("map2", "mark2", "มาร์ค2", "แมพ2", "พาวรถ", "พาว", "car", "car_pound", "carpound"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 📍 กำลังเปิดแผนที่ (P) และปักหมุด Waypoint พาวรถ (Car Pound 2/2)...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("mark_map2", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=25.0)
+                img_path = res.get("image_path")
+                msg_text = res.get("message", "ปักหมุด Waypoint พาวรถ สำเร็จ")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 📍 **{msg_text}**",
+                    file_path=img_path,
+                    reply_to_message_id=msg_id
+                )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ กระบวนการมาร์คแมพพาวรถหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 13. SPAWN / TAKE OUT VEHICLE (car / spawn / เบิกรถ / เบิก / garage / เอารถ / การาจ)
+        if main_cmd in ("car", "spawn", "เบิกรถ", "เบิก", "garage", "เอารถ", "การาจ", "รถ"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 🚗 กำลังกด E ค้าง 2วิ เพื่อเปิดการาจและเบิกรถ...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("spawn_vehicle", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=25.0)
+                img_path = res.get("image_path")
+                msg_text = res.get("message", "สั่งเบิกรถเรียบร้อยแล้ว")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 🚗 **{msg_text}**",
+                    file_path=img_path,
+                    reply_to_message_id=msg_id
+                )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ กระบวนการเบิกรถหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 14. AUTO DRIVE (drive / autodrive / ขับรถ / ขับออโต้ / auto / ขับ)
+        if main_cmd in ("drive", "autodrive", "ขับรถ", "ขับออโต้", "auto", "ขับ", "ออโต้ไดรฟ์"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 🚘 กำลังกด '-' (ข) เพื่อเปิดเมนูควบคุมรถและเปิด Auto Drive...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("auto_drive", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=20.0)
+                img_path = res.get("image_path")
+                msg_text = res.get("message", "เปิดระบบขับออโต้เรียบร้อยแล้ว")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 🚘 **{msg_text}**",
+                    file_path=img_path,
+                    reply_to_message_id=msg_id
+                )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ กระบวนการเปิดระบบขับออโต้หมดเวลา",
                     reply_to_message_id=msg_id
                 )
             return
@@ -1062,24 +1244,20 @@ class MacroWorker(QThread):
     def reset_runtime_watchdog(self, reason):
         """Reset transient worker state without stopping the app or bot."""
         now = time.time()
-        self.hwnd = None
-        if now - self.last_watchdog_reset_time < 15.0:
-            return False
-        self.last_watchdog_reset_time = now
+        self.hwnd = None  # Clear HWND immediately so next loop tick searches for new FiveM window
         self.watchdog_reconnecting = True
-        self.watchdog_resume_at = now + 10.0
+        self.watchdog_resume_at = now + 2.0
         self.capture_failure_streak = 0
         self.runtime_error_streak = 0
         self.last_runtime_error_occurrence_time = 0.0
         self.focus_failure_streak = 0
         self.last_runtime_error = ""
         self.last_runtime_error_time = 0.0
-        self.last_hud_check_time = now + 10.0
-        self.last_feeding_attempt_time = now + 10.0
-        self.last_diamond_check_time = now + 10.0
+        self.last_hud_check_time = 0.0
+        self.last_feeding_attempt_time = 0.0
+        self.last_diamond_check_time = 0.0
 
-        # A reconnect may show a different game session. Cancel only transient
-        # gold UI/count state so the first round safely re-syncs at 30/40.
+        # A reconnect may show a different game session. Cancel transient state
         self.gold_discard_target = None
         self.gold_estimated_count = 0
         self.gold_count_synced = False
@@ -1088,29 +1266,31 @@ class MacroWorker(QThread):
         self.gold_count_committed = None
         self.gold_disposal_stage = None
         self.gold_disposal_started_at = 0.0
-        self.gold_disposal_cooldown_until = self.watchdog_resume_at
+        self.gold_disposal_cooldown_until = 0.0
         self.last_activity_frame = None
         self.character_idle_since = 0.0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
 
-        resume_text = (
-            "บอทจะทำงานต่ออัตโนมัติ"
-            if self.is_running
-            else "เชื่อมต่อแล้วจะรอกด F9"
-        )
-        self.log_signal.emit(
-            f"[Watchdog] {reason} — รีระบบชั่วคราวแล้ว กำลังค้นหา FiveM ใหม่"
-        )
-        self.log_signal.emit(f"[Watchdog] {resume_text}")
-        self.connection_signal.emit(
-            False, "Watchdog กำลังเชื่อมต่อ FiveM ใหม่..."
-        )
-        self.send_bug_webhook(
-            "Watchdog รีระบบ",
-            reason,
-            alert_key="watchdog",
-        )
+        if now - self.last_watchdog_reset_time >= 3.0:
+            self.last_watchdog_reset_time = now
+            resume_text = (
+                "บอทจะกลับมาทำงานต่ออัตโนมัติ 🟢"
+                if self.is_running
+                else "เชื่อมต่อแล้วจะรอกด F9"
+            )
+            self.log_signal.emit(
+                f"[Watchdog] {reason} — รีระบบชั่วคราวแล้ว กำลังค้นหา FiveM ใหม่..."
+            )
+            self.log_signal.emit(f"[Watchdog] {resume_text}")
+            self.connection_signal.emit(
+                False, "กำลังค้นหาหน้าต่าง FiveM ใหม่ (หลังรีเกม)..."
+            )
+            self.send_bug_webhook(
+                "Watchdog รีระบบ",
+                reason,
+                alert_key="watchdog",
+            )
         return True
 
     def record_focus_failure(self, reason):
@@ -1285,18 +1465,36 @@ class MacroWorker(QThread):
     def get_window_hwnd(self, keyword):
         hwnd_list = []
         def callback(hwnd, extra):
-            if win32gui.IsWindowVisible(hwnd):
+            try:
+                if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                    return
+                rect = win32gui.GetClientRect(hwnd)
+                if (rect[2] - rect[0] < 100) or (rect[3] - rect[1] < 100):
+                    return
+
                 title = win32gui.GetWindowText(hwnd)
                 class_name = win32gui.GetClassName(hwnd)
+                lower_title = title.lower()
+
+                # Exclude developer tools and background utilities
+                if any(x in lower_title for x in ["visual studio", "cmd.exe", "powershell", "antigravity", "cursor", "chrome", "firefox", "edge"]):
+                    return
+
                 if class_name == "grcWindow":
                     hwnd_list.append((hwnd, title, 10))
                     return
-                if "cfx.re" in title.lower():
+                if "cfx.re" in lower_title:
                     hwnd_list.append((hwnd, title, 9))
                     return
-                if keyword.lower() in title.lower():
-                    if any(x in title.lower() for x in ["chrome", "firefox", "edge", "visual studio", "cmd.exe", "command prompt", "remotee"]): return
-                    hwnd_list.append((hwnd, title, 5))
+                if keyword.lower() in lower_title:
+                    hwnd_list.append((hwnd, title, 8))
+                    return
+                if "fivem" in lower_title or "grand theft auto" in lower_title or "gta5" in lower_title:
+                    hwnd_list.append((hwnd, title, 7))
+                    return
+            except Exception:
+                pass
+
         win32gui.EnumWindows(callback, None)
         hwnd_list.sort(key=lambda x: x[2], reverse=True)
         return hwnd_list[0][0] if hwnd_list else None
@@ -2799,152 +2997,585 @@ class MacroWorker(QThread):
             return {"success": False, "message": f"เกิดข้อผิดพลาดในการป้อนอาหาร: {error}"}
 
     def execute_remote_mark_map(self):
-        """Execute the Map Waypoint Marking sequence (Press P -> Locate Mine Job / Yellow Truck -> Mark waypoint -> Close Map)."""
+        """
+        Execute Map Waypoint Marking sequence as requested by user:
+        1. Press P (open Pause Menu Map)
+        2. Press Enter (enter Map)
+        3. Move mouse to right-side Legend list and use Down Arrow / Scroll to find 'Mine'
+        4. Click 'Mine' + Press Enter to mark Waypoint
+        5. Press P to exit map immediately
+        """
         try:
             if not self.hwnd:
                 self.hwnd = self.get_window_hwnd(WINDOW_NAME)
             if not self.hwnd:
                 return {"success": False, "message": "ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนสั่งมาร์คแมพ"}
 
-            self.log_signal.emit("[ระบบมาร์คแมพ] เริ่มต้นกระบวนการมาร์คแมพจุดขุด...")
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🚀 เริ่มต้นกระบวนการมาร์คแมพจุดขุด (P -> Enter -> เลื่อนหา Mine -> Enter -> P)...")
             self.activate_game_window()
-            time.sleep(0.2)
+            time.sleep(0.3)
 
             # 1. Open Map with 'P'
-            self.log_signal.emit("[ระบบมาร์คแมพ] กำลังเปิดหน้าต่างแผนที่ (กด P)...")
-            self.send_game_key("P", duration=0.12)
-            time.sleep(1.0)
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🗺️ 1. กำลังเปิดหน้าต่างแผนที่ (กด P)...")
+            self.send_game_key("P", duration=0.15)
+            time.sleep(1.6)
 
-            # 2. Capture map screen
-            map_img = self.capture_background(self.hwnd)
-            if map_img is None:
-                self.send_game_key("ESC", duration=0.12)
-                return {"success": False, "message": "ไม่สามารถจับภาพหน้าจอแผนที่ได้"}
+            # 2. Press 'Enter' to enter Map view
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🔘 2. กำลังเข้าสู่หน้าจอแผนที่ (กด Enter)...")
+            self.send_game_key("Enter", duration=0.15)
+            time.sleep(0.8)
 
-            target_x = None
-            target_y = None
-            found_by = ""
+            # Move mouse away to the left side of map so it does NOT hover or click on any legend items
+            geometry = self.get_client_geometry(self.hwnd)
+            if geometry:
+                w_client, h_client = geometry[2], geometry[3]
+                safe_client_x = int(w_client * 0.30)
+                safe_client_y = int(h_client * 0.50)
+                screen_pt = self.client_to_screen(safe_client_x, safe_client_y)
+                try:
+                    win32api.SetCursorPos(screen_pt)
+                    time.sleep(0.10)
+                except Exception:
+                    pass
 
-            # 3. Try to locate yellow truck blip / Mine Job text using template matching
-            template_files = ["templates/map_yellow_truck.png", "templates/map_mine_blip.png", "templates/map_mine_job.png"]
-            for t_file in template_files:
+            # Load user's latest exact Mine Job templates (high resolution legend row)
+            clean_templates = []
+            for t_file in [
+                "templates/map_mine_job_exact_up.png",
+                "templates/map_mine_job_text_clean.png"
+            ]:
                 t_path = self.resolve_template_path(t_file)
                 if os.path.isfile(t_path):
-                    tpl = cv2.imread(t_path)
-                    if tpl is not None:
-                        res = cv2.matchTemplate(map_img, tpl, cv2.TM_CCOEFF_NORMED)
-                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                        if max_val >= 0.70:
-                            th, tw = tpl.shape[:2]
-                            target_x = max_loc[0] + tw // 2
-                            target_y = max_loc[1] + th // 2
-                            found_by = f"ไอคอน {os.path.basename(t_file)} (ความแม่นยำ {int(max_val * 100)}%)"
-                            break
+                    tpl_img = cv2.imread(t_path)
+                    if tpl_img is not None:
+                        clean_templates.append((tpl_img, os.path.basename(t_file)))
 
-            # 4. Fallback to custom saved coordinate if template not found
-            if target_x is None and self.map_mark_coordinate and len(self.map_mark_coordinate) >= 2:
-                target_x = int(self.map_mark_coordinate[0])
-                target_y = int(self.map_mark_coordinate[1])
-                found_by = "พิกัดที่ผู้ใช้บันทึกไว้"
+            found_mine = False
+            target_pos = None
+            marked_path = get_writable_path("discord_mark_map_capture.png")
 
-            if target_x is None or target_y is None:
-                # Close map before returning
-                self.send_game_key("ESC", duration=0.12)
-                time.sleep(0.3)
-                self.send_game_key("ESC", duration=0.12)
+            # 3. Dynamic Up-Arrow scan (steps UPWARDS from bottom to find Mine Job)
+            self.log_signal.emit("[ระบบมาร์คแมพ] ⬆️ 3. กำลังกดลูกศรขึ้น (Up Arrow) และสแกนหาแถบ 'Mine Job 🚚'...")
+            for step in range(36):
+                # Send 1 UP-Arrow key to move upwards
+                try:
+                    win32api.keybd_event(win32con.VK_UP, 0x48, 1, 0)
+                    time.sleep(0.02)
+                    win32api.keybd_event(win32con.VK_UP, 0x48, 1 | win32con.KEYEVENTF_KEYUP, 0)
+                except Exception:
+                    self.send_game_key("up", duration=0.02)
+
+                time.sleep(0.09)
+
+                map_img = self.capture_background(self.hwnd)
+                if map_img is not None:
+                    h_img, w_img = map_img.shape[:2]
+                    # Check Right Legend area (65% - 100% width)
+                    crop_legend = map_img[:, int(w_img * 0.65):w_img]
+                    for tpl_img, t_name in clean_templates:
+                        if crop_legend.shape[0] >= tpl_img.shape[0] and crop_legend.shape[1] >= tpl_img.shape[1]:
+                            res = cv2.matchTemplate(crop_legend, tpl_img, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                            if max_val >= 0.78:
+                                found_mine = True
+                                target_x = int(w_img * 0.65) + max_loc[0] + tpl_img.shape[1] // 2
+                                target_y = max_loc[1] + tpl_img.shape[0] // 2
+                                target_pos = (target_x, target_y)
+                                self.log_signal.emit(f"[ระบบมาร์คแมพ] 🎯 สแกนพบแถบ 'Mine Job 🚚' สำเร็จ ({t_name} ความแม่นยำ {int(max_val * 100)}% ขั้นที่ {step+1})!")
+                                break
+
+                if found_mine:
+                    break
+
+            if not found_mine:
+                self.log_signal.emit("[ระบบมาร์คแมพ] ⚠️ สแกนครบทุกแถวแล้วไม่พบ 'Mine Job' — ปิดแผนที่เพื่อความปลอดภัย")
+                time.sleep(0.5)
+                self.send_game_key("P", duration=0.15)
                 return {
                     "success": False,
-                    "message": "ไม่พบไอคอน Mine Job (รถสีเหลือง) บนแผนที่ และยังไม่ได้บันทึกพิกัดไว้ กรุณาเลื่อนแผนที่ให้เห็นไอคอน หรือกดบันทึกพิกัดในโปรแกรม"
+                    "message": "สแกนครบทุกแถวแล้วไม่พบแถบ Mine Job บนแผนที่"
                 }
 
-            # 5. Double click left mouse on target coordinate to place Waypoint
-            self.log_signal.emit(f"[ระบบมาร์คแมพ] ตรวจพบเป้าหมาย ({found_by}) ที่ตำแหน่ง ({target_x}, {target_y}) — กำลังดับเบิ้ลคลิกปักหมุด...")
-            
-            screen_pt = self.client_to_screen(target_x, target_y)
+            # 4. Press Enter ONCE to mark Waypoint on Mine Job
+            self.log_signal.emit("[ระบบมาร์คแมพ] 📍 4. กด Enter 1 ครั้งเพื่อปักหมุด Waypoint...")
+            time.sleep(0.10)
             try:
-                win32api.SetCursorPos(screen_pt)
+                win32api.keybd_event(win32con.VK_RETURN, 0x1C, 0, 0)
                 time.sleep(0.08)
-                # First click
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.05)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(0.08)
-                # Second click (double-click)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.05)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                win32api.keybd_event(win32con.VK_RETURN, 0x1C, win32con.KEYEVENTF_KEYUP, 0)
             except Exception:
-                self.bg_click(self.hwnd, target_x, target_y)
-                time.sleep(0.08)
-                self.bg_click(self.hwnd, target_x, target_y)
+                self.send_game_key("Enter", duration=0.10)
 
-            time.sleep(0.5)
+            time.sleep(0.6)  # หน่วงเวลารอให้หมุดม่วงแสดงบนแผนที่
 
-            # 6. Capture proof with waypoint marker
-            marked_img = self.capture_background(self.hwnd)
-            marked_path = get_writable_path("discord_mark_map_capture.png")
-            if marked_img is not None:
-                cv2.circle(marked_img, (target_x, target_y), 18, (0, 255, 0), 2)
-                cv2.imwrite(marked_path, marked_img)
+            # Capture screenshot proof
+            final_img = self.capture_background(self.hwnd)
+            if final_img is not None:
+                if target_pos:
+                    cv2.circle(final_img, (target_pos[0], target_pos[1]), 20, (0, 255, 0), 3)
+                cv2.imwrite(marked_path, final_img)
 
-            # 7. Close map (Press P)
-            self.log_signal.emit("[ระบบมาร์คแมพ] กำลังปิดแผนที่กลับเข้าสู่เกม (กด P)...")
-            self.send_game_key("P", duration=0.12)
+            # 5. Press 'P' to exit map immediately
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🚪 5. กำลังกด P เพื่อออกจากแผนที่ทันที...")
+            self.send_game_key("P", duration=0.15)
             time.sleep(0.4)
 
-            self.log_signal.emit("[ระบบมาร์คแมพ] ✅ ปักหมุด Waypoint จุดขุดบนแผนที่สำเร็จเรียบร้อยแล้ว!")
+            self.log_signal.emit("[ระบบมาร์คแมพ] ✅ ปักหมุด Waypoint จุด Mine และออกจากแผนที่เรียบร้อยแล้ว!")
             return {
                 "success": True,
-                "message": f"ปักหมุด Waypoint จุดขุด (Mine Job) สำเร็จเรียบร้อยแล้ว! ({found_by})",
+                "message": "ปักหมุด Waypoint จุดขุด (Mine) บนแผนที่และออกจากแผนที่เรียบร้อยแล้ว!",
                 "image_path": marked_path if os.path.isfile(marked_path) else None,
             }
         except Exception as error:
             try:
-                self.send_game_key("P", duration=0.12)
+                self.send_game_key("P", duration=0.15)
             except Exception:
                 pass
             return {"success": False, "message": f"เกิดข้อผิดพลาดในการมาร์คแมพ: {error}"}
+
+    def execute_remote_mark_car_pound(self):
+        """
+        Execute Map Waypoint Marking for Point 2: Car Pound (พาวรถ 2/2):
+        Pure dynamic step-by-step visual recognition.
+        """
+        try:
+            if not self.hwnd:
+                self.hwnd = self.get_window_hwnd(WINDOW_NAME)
+            if not self.hwnd:
+                return {"success": False, "message": "ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนสั่งมาร์คแมพ"}
+
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🚀 เริ่มต้นกระบวนการมาร์คแมพจุดที่ 2 (พาวรถ Car Pound 2/2)...")
+            self.activate_game_window()
+            time.sleep(0.3)
+
+            # 1. Open Map with 'P'
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🗺️ 1. กำลังเปิดหน้าต่างแผนที่ (กด P)...")
+            self.send_game_key("P", duration=0.15)
+            time.sleep(1.6)
+
+            # 2. Press 'Enter' to enter Map view
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🔘 2. กำลังเข้าสู่หน้าจอแผนที่ (กด Enter)...")
+            self.send_game_key("Enter", duration=0.15)
+            time.sleep(0.8)
+
+            # Move mouse away to safe position
+            geometry = self.get_client_geometry(self.hwnd)
+            if geometry:
+                w_client, h_client = geometry[2], geometry[3]
+                safe_client_x = int(w_client * 0.30)
+                safe_client_y = int(h_client * 0.50)
+                screen_pt = self.client_to_screen(safe_client_x, safe_client_y)
+                try:
+                    win32api.SetCursorPos(screen_pt)
+                    time.sleep(0.10)
+                except Exception:
+                    pass
+
+            # Load Car Pound templates
+            car_templates = []
+            for t_file in ["templates/map_car_pound_2_2.png", "templates/map_car_pound_text.png"]:
+                t_path = self.resolve_template_path(t_file)
+                if os.path.isfile(t_path):
+                    tpl_img = cv2.imread(t_path)
+                    if tpl_img is not None:
+                        car_templates.append((tpl_img, os.path.basename(t_file)))
+
+            found_car = False
+            target_pos = None
+            marked_path = get_writable_path("discord_mark_map_capture.png")
+
+            # 3. Dynamic step-by-step scan for Car Pound
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🔍 3. กำลังสแกนตรวจจับแถบ 'Car Pound' ทีละแถว...")
+            for step in range(38):
+                map_img = self.capture_background(self.hwnd)
+                if map_img is not None and car_templates:
+                    h_img, w_img = map_img.shape[:2]
+                    crop_legend = map_img[:, int(w_img * 0.60):w_img]
+                    
+                    for tpl_img, t_name in car_templates:
+                        if crop_legend.shape[0] >= tpl_img.shape[0] and crop_legend.shape[1] >= tpl_img.shape[1]:
+                            res = cv2.matchTemplate(crop_legend, tpl_img, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                            if max_val >= 0.50:
+                                found_car = True
+                                target_x = int(w_img * 0.60) + max_loc[0] + tpl_img.shape[1] // 2
+                                target_y = max_loc[1] + tpl_img.shape[0] // 2
+                                target_pos = (target_x, target_y)
+                                self.log_signal.emit(f"[ระบบมาร์คแมพ] 🎯 สแกนพบ 'Car Pound' สำเร็จ (ความแม่นยำ {int(max_val * 100)}% แถวที่ {step+1})!")
+                                break
+
+                if found_car:
+                    # Switch sub-location to 2/2 using Right Arrow
+                    self.log_signal.emit("[ระบบมาร์คแมพ] 🔄 ปรับเลือกเป็น Car Pound ❮ 2/2 ❯...")
+                    try:
+                        win32api.keybd_event(win32con.VK_RIGHT, 0x4D, 1, 0)
+                        time.sleep(0.02)
+                        win32api.keybd_event(win32con.VK_RIGHT, 0x4D, 1 | win32con.KEYEVENTF_KEYUP, 0)
+                    except Exception:
+                        self.send_game_key("right", duration=0.02)
+                    time.sleep(0.30)
+                    break
+
+                # Send 1 Down-Arrow key
+                try:
+                    win32api.keybd_event(win32con.VK_DOWN, 0x50, 1, 0)
+                    time.sleep(0.02)
+                    win32api.keybd_event(win32con.VK_DOWN, 0x50, 1 | win32con.KEYEVENTF_KEYUP, 0)
+                except Exception:
+                    self.send_game_key("down", duration=0.02)
+
+                time.sleep(0.08)
+
+            if not found_car:
+                self.log_signal.emit("[ระบบมาร์คแมพ] ⚠️ สแกนครบทุกแถวแล้วไม่พบ 'Car Pound' — ปิดแผนที่เพื่อความปลอดภัย")
+                time.sleep(0.5)
+                self.send_game_key("P", duration=0.15)
+                return {
+                    "success": False,
+                    "message": "สแกนครบทุกแถวแล้วไม่พบแถบ Car Pound บนแผนที่"
+                }
+
+            # 4. Press Enter ONCE to mark Waypoint
+            self.log_signal.emit("[ระบบมาร์คแมพ] 📍 4. กด Enter 1 ครั้งเพื่อปักหมุด Waypoint...")
+            time.sleep(0.10)
+            try:
+                win32api.keybd_event(win32con.VK_RETURN, 0x1C, 0, 0)
+                time.sleep(0.08)
+                win32api.keybd_event(win32con.VK_RETURN, 0x1C, win32con.KEYEVENTF_KEYUP, 0)
+            except Exception:
+                self.send_game_key("Enter", duration=0.10)
+
+            time.sleep(0.6)
+
+            # Capture screenshot proof
+            final_img = self.capture_background(self.hwnd)
+            if final_img is not None:
+                if target_pos:
+                    cv2.circle(final_img, (target_pos[0], target_pos[1]), 20, (0, 255, 0), 3)
+                cv2.imwrite(marked_path, final_img)
+
+            # 5. Press 'P' to exit map immediately
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🚪 5. กำลังกด P เพื่อออกจากแผนที่ทันที...")
+            self.send_game_key("P", duration=0.15)
+            time.sleep(0.4)
+
+            self.log_signal.emit("[ระบบมาร์คแมพ] ✅ ปักหมุด Waypoint พาวรถ (Car Pound 2/2) และออกจากแผนที่เรียบร้อยแล้ว!")
+            return {
+                "success": True,
+                "message": "ปักหมุด Waypoint พาวรถ (Car Pound 2/2) บนแผนที่และออกจากแผนที่เรียบร้อยแล้ว!",
+                "image_path": marked_path if os.path.isfile(marked_path) else None,
+            }
+        except Exception as error:
+            try:
+                self.send_game_key("P", duration=0.15)
+            except Exception:
+                pass
+            return {"success": False, "message": f"เกิดข้อผิดพลาดในการมาร์คแมพพาวรถ: {error}"}
+
+    def execute_remote_spawn_vehicle(self):
+        """
+        Execute Vehicle Spawn / Garage withdrawal sequence:
+        1. Hold E for 2.0 seconds to open garage menu
+        2. Wait for garage UI to open
+        3. Scan and click car card (TALEPOD / In Garage)
+        4. Scan and click 'Select Vehicle' button
+        5. Capture confirmation proof
+        """
+        try:
+            if not self.hwnd:
+                self.hwnd = self.get_window_hwnd(WINDOW_NAME)
+            if not self.hwnd:
+                return {"success": False, "message": "ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนสั่งเบิกรถ"}
+
+            self.log_signal.emit("[ระบบเบิกรถ] 🚀 เริ่มต้นกระบวนการเบิกรถ (กด E ค้าง 2วิ -> เลือกรถ -> กด Select Vehicle)...")
+            self.activate_game_window()
+            time.sleep(0.3)
+
+            # 1. Hold E for 2.0 seconds to trigger Open Garage
+            self.log_signal.emit("[ระบบเบิกรถ] 🔑 1. กำลังกด E ค้าง 2.0 วินาทีเพื่อเปิดเมนูการาจ...")
+            try:
+                win32api.keybd_event(ord('E'), 0x12, 0, 0)
+                time.sleep(2.0)
+                win32api.keybd_event(ord('E'), 0x12, win32con.KEYEVENTF_KEYUP, 0)
+            except Exception:
+                self.send_game_key("E", duration=2.0)
+
+            time.sleep(1.2)  # Wait for Garage NUI interface to open and render
+
+            # Load vehicle card templates
+            car_templates = []
+            for t_file in [
+                "templates/garage_car_card_default.png",
+                "templates/garage_in_garage_badge.png"
+            ]:
+                t_path = self.resolve_template_path(t_file)
+                if os.path.isfile(t_path):
+                    tpl_img = cv2.imread(t_path)
+                    if tpl_img is not None:
+                        car_templates.append((tpl_img, os.path.basename(t_file)))
+
+            # Load Select Vehicle button templates
+            btn_templates = []
+            for t_file in [
+                "templates/garage_btn_select_vehicle.png",
+                "templates/garage_select_vehicle_text.png"
+            ]:
+                t_path = self.resolve_template_path(t_file)
+                if os.path.isfile(t_path):
+                    tpl_img = cv2.imread(t_path)
+                    if tpl_img is not None:
+                        btn_templates.append((tpl_img, os.path.basename(t_file)))
+
+            # 2. Scan and click car card
+            self.log_signal.emit("[ระบบเบิกรถ] 🚗 2. กำลังสแกนหาการ์ดรถและคลิกเลือก...")
+            car_clicked = False
+            for try_idx in range(3):
+                bg_img = self.capture_background(self.hwnd)
+                if bg_img is not None and car_templates:
+                    h_img, w_img = bg_img.shape[:2]
+                    for tpl_img, t_name in car_templates:
+                        if bg_img.shape[0] >= tpl_img.shape[0] and bg_img.shape[1] >= tpl_img.shape[1]:
+                            res = cv2.matchTemplate(bg_img, tpl_img, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                            if max_val >= 0.50:
+                                click_x = max_loc[0] + tpl_img.shape[1] // 2
+                                click_y = max_loc[1] + tpl_img.shape[0] // 2
+                                screen_pt = self.client_to_screen(click_x, click_y)
+                                try:
+                                    win32api.SetCursorPos(screen_pt)
+                                    time.sleep(0.10)
+                                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                                    time.sleep(0.06)
+                                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                                    self.log_signal.emit(f"[ระบบเบิกรถ] 🎯 คลิกเลือกการ์ดรถสำเร็จ ({t_name} ความแม่นยำ {int(max_val * 100)}%)!")
+                                    car_clicked = True
+                                    break
+                                except Exception:
+                                    pass
+                if car_clicked:
+                    break
+                time.sleep(0.4)
+
+            time.sleep(0.8)  # Wait for 'Select Vehicle' button to become active
+
+            # 3. Scan and click 'Select Vehicle' button
+            self.log_signal.emit("[ระบบเบิกรถ] 🔘 3. กำลังค้นหาและกดปุ่ม 'Select Vehicle'...")
+            btn_clicked = False
+            for try_idx in range(3):
+                bg_img = self.capture_background(self.hwnd)
+                if bg_img is not None and btn_templates:
+                    for tpl_img, t_name in btn_templates:
+                        if bg_img.shape[0] >= tpl_img.shape[0] and bg_img.shape[1] >= tpl_img.shape[1]:
+                            res = cv2.matchTemplate(bg_img, tpl_img, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                            if max_val >= 0.50:
+                                click_x = max_loc[0] + tpl_img.shape[1] // 2
+                                click_y = max_loc[1] + tpl_img.shape[0] // 2
+                                screen_pt = self.client_to_screen(click_x, click_y)
+                                try:
+                                    win32api.SetCursorPos(screen_pt)
+                                    time.sleep(0.10)
+                                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                                    time.sleep(0.06)
+                                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                                    self.log_signal.emit(f"[ระบบเบิกรถ] 🎯 กดปุ่ม 'Select Vehicle' สำเร็จ ({t_name} ความแม่นยำ {int(max_val * 100)}%)!")
+                                    btn_clicked = True
+                                    break
+                                except Exception:
+                                    pass
+                if btn_clicked:
+                    break
+                time.sleep(0.4)
+
+            time.sleep(1.0)
+
+            # Capture screenshot proof
+            proof_path = get_writable_path("discord_spawn_vehicle_capture.png")
+            final_img = self.capture_background(self.hwnd)
+            if final_img is not None:
+                cv2.imwrite(proof_path, final_img)
+
+            if car_clicked or btn_clicked:
+                # 4. Wait 4.0 seconds after spawning car then press B to fasten seatbelt
+                self.log_signal.emit("[ระบบเบิกรถ] ⏳ 4. กำลังรอรถเกิดและขึ้นรถ (4.0 วินาที)...")
+                time.sleep(4.0)
+
+                self.log_signal.emit("[ระบบเบิกรถ] 🔒 5. กำลังกด B เพื่อรัดเข็มขัดนิรภัย...")
+                self.send_game_key("B", duration=0.15)
+                time.sleep(0.5)
+
+                self.log_signal.emit("[ระบบเบิกรถ] ✅ สั่งเบิกรถและรัดเข็มขัดนิรภัย (B) เรียบร้อยแล้ว!")
+                return {
+                    "success": True,
+                    "message": "สั่งเบิกรถและรัดเข็มขัดนิรภัย (B) เรียบร้อยแล้ว!",
+                    "image_path": proof_path if os.path.isfile(proof_path) else None,
+                }
+            else:
+                self.log_signal.emit("[ระบบเบิกรถ] ⚠️ ไม่พบเมนูหรือปุ่มเบิกรถ กรุณาตรวจสอบว่าตัวละครยืนอยู่ในจุดเบิกรถหรือไม่")
+                return {
+                    "success": False,
+                    "message": "ไม่พบเมนูหรือปุ่มเบิกรถ กรุณาตรวจสอบว่าตัวละครยืนอยู่ในจุดเบิกรถหรือไม่",
+                    "image_path": proof_path if os.path.isfile(proof_path) else None,
+                }
+        except Exception as error:
+            return {"success": False, "message": f"เกิดข้อผิดพลาดในการเบิกรถ: {error}"}
+
+    def execute_remote_auto_drive(self):
+        """
+        Execute Auto Drive sequence:
+        1. Press '-' (or 'ข') to open Vehicle Control menu
+        2. Wait for vehicle menu to open
+        3. Scan and click 'Auto Drive' button
+        4. Capture confirmation proof
+        """
+        try:
+            if not self.hwnd:
+                self.hwnd = self.get_window_hwnd(WINDOW_NAME)
+            if not self.hwnd:
+                return {"success": False, "message": "ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนสั่งขับออโต้"}
+
+            self.log_signal.emit("[ระบบขับออโต้] 🚀 เริ่มต้นกระบวนการเปิดระบบขับออโต้ (กด '-' -> คลิก Auto Drive)...")
+            self.activate_game_window()
+            time.sleep(0.3)
+
+            # 1. Press '-' (or 'ข') key to open vehicle menu
+            self.log_signal.emit("[ระบบขับออโต้] 🔑 1. กำลังกดปุ่ม '-' (ข) เพื่อเปิดเมนูควบคุมรถ...")
+            try:
+                win32api.keybd_event(0xBD, 0x0C, 0, 0)
+                time.sleep(0.08)
+                win32api.keybd_event(0xBD, 0x0C, win32con.KEYEVENTF_KEYUP, 0)
+            except Exception:
+                self.send_game_key("-", duration=0.08)
+
+            time.sleep(0.8)  # Wait for vehicle control menu to render
+
+            # Load Auto Drive templates
+            auto_templates = []
+            for t_file in [
+                "templates/car_menu_auto_drive_btn.png",
+                "templates/car_menu_auto_drive_text.png",
+                "templates/car_menu_start_stop.png"
+            ]:
+                t_path = self.resolve_template_path(t_file)
+                if os.path.isfile(t_path):
+                    tpl_img = cv2.imread(t_path)
+                    if tpl_img is not None:
+                        auto_templates.append((tpl_img, os.path.basename(t_file)))
+
+            # 2. Scan and click Auto Drive button
+            self.log_signal.emit("[ระบบขับออโต้] 🔘 2. กำลังสแกนหาปุ่ม 'Auto Drive' และคลิก...")
+            btn_clicked = False
+            target_pt = None
+            for try_idx in range(4):
+                bg_img = self.capture_background(self.hwnd)
+                if bg_img is not None and auto_templates:
+                    h_img, w_img = bg_img.shape[:2]
+                    for tpl_img, t_name in auto_templates:
+                        if bg_img.shape[0] >= tpl_img.shape[0] and bg_img.shape[1] >= tpl_img.shape[1]:
+                            res = cv2.matchTemplate(bg_img, tpl_img, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                            if max_val >= 0.50:
+                                if "start_stop" in t_name:
+                                    # Auto Drive is directly below START STOP
+                                    click_x = max_loc[0] + tpl_img.shape[1] // 2
+                                    click_y = max_loc[1] + tpl_img.shape[0] + 20
+                                else:
+                                    click_x = max_loc[0] + tpl_img.shape[1] // 2
+                                    click_y = max_loc[1] + tpl_img.shape[0] // 2
+                                
+                                screen_pt = self.client_to_screen(click_x, click_y)
+                                target_pt = (click_x, click_y)
+                                try:
+                                    win32api.SetCursorPos(screen_pt)
+                                    time.sleep(0.10)
+                                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                                    time.sleep(0.06)
+                                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                                    self.log_signal.emit(f"[ระบบขับออโต้] 🎯 คลิกปุ่ม 'Auto Drive' สำเร็จ ({t_name} ความแม่นยำ {int(max_val * 100)}%)!")
+                                    btn_clicked = True
+                                    break
+                                except Exception:
+                                    pass
+                if btn_clicked:
+                    break
+                time.sleep(0.3)
+
+            time.sleep(0.8)
+
+            # Capture screenshot proof
+            proof_path = get_writable_path("discord_auto_drive_capture.png")
+            final_img = self.capture_background(self.hwnd)
+            if final_img is not None:
+                if target_pt:
+                    cv2.circle(final_img, target_pt, 22, (0, 255, 0), 3)
+                cv2.imwrite(proof_path, final_img)
+
+            if btn_clicked:
+                # 3. Press ESC to close vehicle control menu
+                time.sleep(0.3)
+                self.log_signal.emit("[ระบบขับออโต้] 🚪 3. กำลังกด ESC เพื่อปิดเมนูควบคุมรถ...")
+                self.send_game_key("Esc", duration=0.15)
+                time.sleep(0.3)
+
+                self.log_signal.emit("[ระบบขับออโต้] ✅ เปิดระบบขับรถอัตโนมัติ (Auto Drive) และปิดเมนูเรียบร้อยแล้ว!")
+                return {
+                    "success": True,
+                    "message": "เปิดระบบขับรถอัตโนมัติ (Auto Drive) และกด ESC ปิดเมนูเรียบร้อยแล้ว!",
+                    "image_path": proof_path if os.path.isfile(proof_path) else None,
+                }
+            else:
+                self.log_signal.emit("[ระบบขับออโต้] ⚠️ ไม่พบเมนูควบคุมรถหรือปุ่ม Auto Drive กรุณาตรวจสอบว่าตัวละครนั่งอยู่ในรถหรือไม่")
+                return {
+                    "success": False,
+                    "message": "ไม่พบเมนูควบคุมรถหรือปุ่ม Auto Drive กรุณาตรวจสอบว่าตัวละครนั่งอยู่ในรถหรือไม่",
+                    "image_path": proof_path if os.path.isfile(proof_path) else None,
+                }
+        except Exception as error:
+            return {"success": False, "message": f"เกิดข้อผิดพลาดในการเปิดระบบขับออโต้: {error}"}
 
 
     def run(self):
         while not self.is_exiting:
             try:
-                if not self.hwnd:
-                    self.hwnd = self.get_window_hwnd(WINDOW_NAME)
-                    if self.hwnd: self.connection_signal.emit(True, win32gui.GetWindowText(self.hwnd))
+                # 1. Continuous HWND validity check
+                if not self.hwnd or not win32gui.IsWindow(self.hwnd) or not win32gui.IsWindowVisible(self.hwnd):
+                    self.hwnd = None
+                    new_hwnd = self.get_window_hwnd(WINDOW_NAME)
+                    if new_hwnd:
+                        self.hwnd = new_hwnd
+                        window_title = win32gui.GetWindowText(self.hwnd)
+                        self.connection_signal.emit(True, window_title)
+                        self.log_signal.emit(f"[ระบบ] 🟢 เชื่อมต่อ FiveM สำเร็จ: {window_title[:30]}")
+                        self.watchdog_reconnecting = False
+                        self.capture_failure_streak = 0
                     else:
                         self.connection_signal.emit(False, "กำลังค้นหาหน้าต่างเกม FiveM...")
-                        time.sleep(2)
+                        time.sleep(1.5)
                         continue
-                if not win32gui.IsWindow(self.hwnd):
-                    self.reset_runtime_watchdog(
-                        "หน้าต่าง FiveM ถูกปิดหรือมีการรีเกม"
-                    )
-                    time.sleep(0.5)
-                    continue
+
+                # 2. Capture background
                 bg_img = self.capture_background(self.hwnd)
                 if bg_img is None:
                     self.capture_failure_streak += 1
-                    if self.capture_failure_streak >= 5:
-                        self.reset_runtime_watchdog(
-                            "จับภาพ FiveM ไม่สำเร็จ 5 ครั้งติด"
-                        )
-                    time.sleep(1.5)
+                    if self.capture_failure_streak >= 3:
+                        self.reset_runtime_watchdog("จับภาพ FiveM ไม่สำเร็จ (เกมอาจกำลังรีโหลดหรือย่อจอ)")
+                    time.sleep(1.0)
                     continue
+
                 self.capture_failure_streak = 0
                 if self.watchdog_reconnecting:
                     self.watchdog_reconnecting = False
                     resume_text = (
-                        "บอทกลับมาทำงานต่ออัตโนมัติ"
+                        "บอทกลับมาทำงานต่ออัตโนมัติ 🟢"
                         if self.is_running
                         else "ระบบพร้อมแล้ว กด F9 เพื่อเริ่มบอท"
                     )
-                    self.log_signal.emit(
-                        f"[Watchdog] เชื่อมต่อ FiveM ใหม่สำเร็จ — {resume_text}"
-                    )
+                    self.log_signal.emit(f"[Watchdog] เชื่อมต่อ FiveM ใหม่สำเร็จ — {resume_text}")
+
                 if time.time() < self.watchdog_resume_at:
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                     continue
+
                 self.save_latest_gold_debug_capture(bg_img)
                 if self.hud_region: self.process_hud_preview(bg_img)
                 if self.force_feed_test:
@@ -3469,19 +4100,34 @@ class MainWindow(QMainWindow):
         self.map_mark_lbl.setStyleSheet("color: #475569; font-size: 11px;")
 
         map_btn_row = QHBoxLayout()
-        self.btn_test_mark_map = QPushButton("📍 ทดสอบมาร์คแมพ (กด P และปักหมุด)")
-        self.btn_test_mark_map.setStyleSheet("QPushButton { background-color: #8b5cf6; border: none; color: white; font-weight: bold; font-size: 12px; border-radius: 6px; padding: 6px 12px; }")
+        self.btn_test_mark_map = QPushButton("📍 map1 (จุดขุด)")
+        self.btn_test_mark_map.setStyleSheet("QPushButton { background-color: #8b5cf6; border: none; color: white; font-weight: bold; font-size: 11px; border-radius: 6px; padding: 6px 8px; }")
         self.btn_test_mark_map.clicked.connect(self.test_mark_map_sequence)
 
-        self.btn_crop_map_mark = QPushButton("🎯 บันทึกพิกัด/ครอปรูป")
-        self.btn_crop_map_mark.setStyleSheet("QPushButton { background-color: #0284c7; border: none; color: white; font-size: 11px; border-radius: 6px; padding: 6px 8px; }")
+        self.btn_test_mark_map2 = QPushButton("🚗 map2 (พาวรถ)")
+        self.btn_test_mark_map2.setStyleSheet("QPushButton { background-color: #ec4899; border: none; color: white; font-weight: bold; font-size: 11px; border-radius: 6px; padding: 6px 8px; }")
+        self.btn_test_mark_map2.clicked.connect(self.test_mark_map2_sequence)
+
+        self.btn_test_spawn_car = QPushButton("🚙 เบิกรถ")
+        self.btn_test_spawn_car.setStyleSheet("QPushButton { background-color: #0284c7; border: none; color: white; font-weight: bold; font-size: 11px; border-radius: 6px; padding: 6px 6px; }")
+        self.btn_test_spawn_car.clicked.connect(self.test_spawn_vehicle_sequence)
+
+        self.btn_test_auto_drive = QPushButton("🚘 ขับออโต้")
+        self.btn_test_auto_drive.setStyleSheet("QPushButton { background-color: #059669; border: none; color: white; font-weight: bold; font-size: 11px; border-radius: 6px; padding: 6px 6px; }")
+        self.btn_test_auto_drive.clicked.connect(self.test_auto_drive_sequence)
+
+        self.btn_crop_map_mark = QPushButton("🎯 พิกัด")
+        self.btn_crop_map_mark.setStyleSheet("QPushButton { font-size: 11px; padding: 6px 6px; }")
         self.btn_crop_map_mark.clicked.connect(self.select_map_mark_region)
 
         self.btn_reset_map_mark = QPushButton("🔄 ออโต้")
-        self.btn_reset_map_mark.setStyleSheet("QPushButton { font-size: 11px; padding: 6px 8px; }")
+        self.btn_reset_map_mark.setStyleSheet("QPushButton { font-size: 11px; padding: 6px 6px; }")
         self.btn_reset_map_mark.clicked.connect(self.reset_map_mark_coordinate)
 
         map_btn_row.addWidget(self.btn_test_mark_map)
+        map_btn_row.addWidget(self.btn_test_mark_map2)
+        map_btn_row.addWidget(self.btn_test_spawn_car)
+        map_btn_row.addWidget(self.btn_test_auto_drive)
         map_btn_row.addWidget(self.btn_crop_map_mark)
         map_btn_row.addWidget(self.btn_reset_map_mark)
 
@@ -4030,18 +4676,27 @@ class MainWindow(QMainWindow):
         except Exception: pass
 
     def load_private_settings(self):
+        is_beta_app = (
+            "beta" in sys.argv[0].lower()
+            or "beta" in os.getcwd().lower()
+            or os.environ.get("FIVEM_FARMING_CHANNEL") == "beta"
+        )
+        default_prefix = "?" if is_beta_app else "!"
+        self.discord_webhook_url = getattr(self, "discord_webhook_url", "")
+        self.diamond_mode = getattr(self, "diamond_mode", "car_timer")
+        self.diamond_interval_minutes = 40
+        self.discord_bot_token = ""
+        self.discord_admin_id = ""
+        self.discord_remote_enabled = False
+        self.discord_command_prefix = default_prefix
+        self.server_address = ""
+
         try:
-            is_beta_app = (
-                "beta" in sys.argv[0].lower()
-                or "beta" in os.getcwd().lower()
-                or os.environ.get("FIVEM_FARMING_CHANNEL") == "beta"
-            )
-            default_prefix = "?" if is_beta_app else "!"
             if os.path.exists(self.private_settings_path):
                 with open(self.private_settings_path, "r", encoding="utf-8") as stream:
                     private_data = json.load(stream)
                 self.discord_webhook_url = str(
-                    private_data.get("discord_webhook_url", "")
+                    private_data.get("discord_webhook_url", self.discord_webhook_url)
                 ).strip()
                 self.diamond_mode = str(
                     private_data.get("diamond_mode", self.diamond_mode)
@@ -4053,12 +4708,7 @@ class MainWindow(QMainWindow):
                 self.discord_command_prefix = str(private_data.get("discord_command_prefix", default_prefix)).strip() or default_prefix
                 self.server_address = str(private_data.get("server_address", "")).strip()
         except Exception:
-            self.discord_webhook_url = ""
-            self.discord_bot_token = ""
-            self.discord_admin_id = ""
-            self.discord_remote_enabled = False
-            self.discord_command_prefix = default_prefix
-            self.server_address = ""
+            pass
 
     def save_private_settings(self):
         try:
@@ -4081,7 +4731,14 @@ class MainWindow(QMainWindow):
 
     def get_region_text(self, region):
         if not region: return "ยังไม่ได้ตั้งค่า"
-        return f"X:{region[0]}, Y:{region[1]} ({region[2]}x{region[3]})"
+        try:
+            if len(region) == 2:
+                return f"X:{region[0]}, Y:{region[1]}"
+            if len(region) >= 4:
+                return f"X:{region[0]}, Y:{region[1]} ({region[2]}x{region[3]})"
+            return str(region)
+        except Exception:
+            return "ยังไม่ได้ตั้งค่า"
 
     def selection_to_client_region(self, x, y, w, h):
         geometry = self.worker.get_client_geometry()
@@ -4340,8 +4997,29 @@ class MainWindow(QMainWindow):
         if not self.worker.hwnd:
             self.write_log("[!] ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนทดสอบมาร์คแมพ")
             return
-        self.write_log("[ระบบมาร์คแมพ] กำลังทดสอบปักหมุด Waypoint บนแผนที่ (กด P)...")
+        self.write_log("[ระบบมาร์คแมพ] กำลังทดสอบปักหมุด map1 (Mine Job)...")
         threading.Thread(target=self.worker.execute_remote_mark_map, daemon=True).start()
+
+    def test_mark_map2_sequence(self):
+        if not self.worker.hwnd:
+            self.write_log("[!] ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนทดสอบมาร์คแมพ")
+            return
+        self.write_log("[ระบบมาร์คแมพ] กำลังทดสอบปักหมุด map2 (พาวรถ Car Pound 2/2)...")
+        threading.Thread(target=self.worker.execute_remote_mark_car_pound, daemon=True).start()
+
+    def test_spawn_vehicle_sequence(self):
+        if not self.worker.hwnd:
+            self.write_log("[!] ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนทดสอบเบิกรถ")
+            return
+        self.write_log("[ระบบเบิกรถ] กำลังทดสอบเบิกรถ (กด E ค้าง 2วิ)...")
+        threading.Thread(target=self.worker.execute_remote_spawn_vehicle, daemon=True).start()
+
+    def test_auto_drive_sequence(self):
+        if not self.worker.hwnd:
+            self.write_log("[!] ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนทดสอบขับออโต้")
+            return
+        self.write_log("[ระบบขับออโต้] กำลังทดสอบเปิดระบบขับออโต้ (กด '-' -> คลิก Auto Drive)...")
+        threading.Thread(target=self.worker.execute_remote_auto_drive, daemon=True).start()
 
     def select_map_mark_region(self):
         if not self.worker.hwnd: return
@@ -4485,6 +5163,15 @@ class MainWindow(QMainWindow):
                 return
             elif action_name == "mark_map":
                 res = self.worker.execute_remote_mark_map()
+                callback(res)
+            elif action_name == "mark_map2":
+                res = self.worker.execute_remote_mark_car_pound()
+                callback(res)
+            elif action_name == "spawn_vehicle":
+                res = self.worker.execute_remote_spawn_vehicle()
+                callback(res)
+            elif action_name == "auto_drive":
+                res = self.worker.execute_remote_auto_drive()
                 callback(res)
             elif action_name == "check_bag":
                 res = self.worker.execute_remote_check_bag()

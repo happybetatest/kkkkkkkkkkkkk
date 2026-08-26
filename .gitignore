@@ -11,3 +11,6 @@ assets_bundle.zip
 local-release/
 source/
 templates_b64/
+
+private-settings.json
+*.nip

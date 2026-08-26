@@ -82,17 +82,26 @@
     "thirst_limit": 10,
     "auto_feed_enabled": true,
     "auto_store_enabled": true,
+    "map_mark_coordinate": [
+        1522,
+        265
+    ],
     "diamond_mode": "car_timer",
     "diamond_interval_minutes": 40,
     "reference_resolution": [
         1600,
         900
     ],
-    "template_reference_sizes": {},
+    "template_reference_sizes": {
+        "map_mine_blip.png": [
+            1600,
+            900
+        ]
+    },
     "window_geometry": [
-        1219,
+        739,
         30,
-        680,
-        520
+        1160,
+        914
     ]
 }
