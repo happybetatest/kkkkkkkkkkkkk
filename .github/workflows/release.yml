@@ -62,6 +62,7 @@ jobs:
           Copy-Item gui_macro.py release-package\templates\_app\
           Copy-Item keyauth_helper.py release-package\templates\_app\
           Copy-Item discord_remote.py release-package\templates\_app\
+          Copy-Item loading_assets.py release-package\templates\_app\
           Copy-Item portable-runtime release-package\templates\_runtime -Recurse
           Compress-Archive -Path release-package\* -DestinationPath dist\FiveM-Farming-Package.zip -Force
           $hash = (Get-FileHash dist\FiveM-Farming-Package.zip -Algorithm SHA256).Hash.ToLower()
@@ -80,6 +81,7 @@ jobs:
           Copy-Item gui_macro.py beta-package\templates\_app\
           Copy-Item keyauth_helper.py beta-package\templates\_app\
           Copy-Item discord_remote.py beta-package\templates\_app\
+          Copy-Item loading_assets.py beta-package\templates\_app\
           Copy-Item portable-runtime beta-package\templates\_runtime -Recurse
           Compress-Archive -Path beta-package\* -DestinationPath dist\FiveM-Farming-Beta-Package.zip -Force
           $betaHash = (Get-FileHash dist\FiveM-Farming-Beta-Package.zip -Algorithm SHA256).Hash.ToLower()
