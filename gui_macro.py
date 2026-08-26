@@ -3112,7 +3112,9 @@ class MacroWorker(QThread):
             clean_templates = []
             for t_file in [
                 "templates/map_mine_job_exact_up.png",
-                "templates/map_mine_job_text_clean.png"
+                "templates/map_mine_blip.png",
+                "templates/map_mine_job_text_clean.png",
+                "templates/map_mine_truck_icon_only.png"
             ]:
                 t_path = self.resolve_template_path(t_file)
                 if os.path.isfile(t_path):
@@ -3124,38 +3126,103 @@ class MacroWorker(QThread):
             target_pos = None
             marked_path = get_writable_path("discord_mark_map_capture.png")
 
-            # 3. Dynamic Up-Arrow scan (steps UPWARDS from bottom to find Mine Job)
-            self.log_signal.emit("[ระบบมาร์คแมพ] ⬆️ 3. กำลังกดลูกศรขึ้น (Up Arrow) และสแกนหาแถบ 'Mine Job 🚚'...")
-            for step in range(36):
-                # Send 1 UP-Arrow key to move upwards
+            # 3. Dynamic scan (Check initial screen -> Up Arrow scan -> Down Arrow scan)
+            self.log_signal.emit("[ระบบมาร์คแมพ] 🔍 3. กำลังสแกนหาแถบ 'Mine Job 🚚' บนแผนที่...")
+
+            # 3.0 Check if manual coordinate was set by user
+            if self.map_mark_coordinate and len(self.map_mark_coordinate) == 2:
+                mc_x, mc_y = self.map_mark_coordinate
+                screen_pt = self.client_to_screen(mc_x, mc_y)
                 try:
-                    win32api.keybd_event(win32con.VK_UP, 0x48, 1, 0)
-                    time.sleep(0.02)
-                    win32api.keybd_event(win32con.VK_UP, 0x48, 1 | win32con.KEYEVENTF_KEYUP, 0)
+                    win32api.SetCursorPos(screen_pt)
+                    time.sleep(0.10)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.06)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    time.sleep(0.20)
+                    found_mine = True
+                    target_pos = (mc_x, mc_y)
+                    self.log_signal.emit(f"[ระบบมาร์คแมพ] 🎯 คลิกเลือกตามพิกัดที่บันทึกไว้ ({mc_x}, {mc_y}) สำเร็จ!")
                 except Exception:
-                    self.send_game_key("up", duration=0.02)
+                    pass
 
-                time.sleep(0.09)
-
+            # 3.1 Initial scan before moving
+            if not found_mine:
                 map_img = self.capture_background(self.hwnd)
                 if map_img is not None:
                     h_img, w_img = map_img.shape[:2]
-                    # Check Right Legend area (65% - 100% width)
-                    crop_legend = map_img[:, int(w_img * 0.65):w_img]
+                    crop_legend = map_img[:, int(w_img * 0.55):w_img]
                     for tpl_img, t_name in clean_templates:
                         if crop_legend.shape[0] >= tpl_img.shape[0] and crop_legend.shape[1] >= tpl_img.shape[1]:
                             res = cv2.matchTemplate(crop_legend, tpl_img, cv2.TM_CCOEFF_NORMED)
                             _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                            if max_val >= 0.78:
+                            if max_val >= 0.55:
                                 found_mine = True
-                                target_x = int(w_img * 0.65) + max_loc[0] + tpl_img.shape[1] // 2
+                                target_x = int(w_img * 0.55) + max_loc[0] + tpl_img.shape[1] // 2
                                 target_y = max_loc[1] + tpl_img.shape[0] // 2
                                 target_pos = (target_x, target_y)
-                                self.log_signal.emit(f"[ระบบมาร์คแมพ] 🎯 สแกนพบแถบ 'Mine Job 🚚' สำเร็จ ({t_name} ความแม่นยำ {int(max_val * 100)}% ขั้นที่ {step+1})!")
+                                self.log_signal.emit(f"[ระบบมาร์คแมพ] 🎯 พบแถบ 'Mine Job 🚚' บนหน้าจอทันที ({t_name} ความแม่นยำ {int(max_val * 100)}%)!")
                                 break
 
-                if found_mine:
-                    break
+            # 3.2 Up-Arrow Scan
+            if not found_mine:
+                self.log_signal.emit("[ระบบมาร์คแมพ] ⬆️ กำลังกดลูกศรขึ้น (Up Arrow) สแกนหา 'Mine Job 🚚'...")
+                for step in range(35):
+                    try:
+                        win32api.keybd_event(win32con.VK_UP, 0x48, 1, 0)
+                        time.sleep(0.02)
+                        win32api.keybd_event(win32con.VK_UP, 0x48, 1 | win32con.KEYEVENTF_KEYUP, 0)
+                    except Exception:
+                        self.send_game_key("up", duration=0.02)
+
+                    time.sleep(0.08)
+                    map_img = self.capture_background(self.hwnd)
+                    if map_img is not None:
+                        h_img, w_img = map_img.shape[:2]
+                        crop_legend = map_img[:, int(w_img * 0.55):w_img]
+                        for tpl_img, t_name in clean_templates:
+                            if crop_legend.shape[0] >= tpl_img.shape[0] and crop_legend.shape[1] >= tpl_img.shape[1]:
+                                res = cv2.matchTemplate(crop_legend, tpl_img, cv2.TM_CCOEFF_NORMED)
+                                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                if max_val >= 0.55:
+                                    found_mine = True
+                                    target_x = int(w_img * 0.55) + max_loc[0] + tpl_img.shape[1] // 2
+                                    target_y = max_loc[1] + tpl_img.shape[0] // 2
+                                    target_pos = (target_x, target_y)
+                                    self.log_signal.emit(f"[ระบบมาร์คแมพ] 🎯 สแกนพบแถบ 'Mine Job 🚚' สำเร็จ ({t_name} ความแม่นยำ {int(max_val * 100)}% ขั้นที่ {step+1})!")
+                                    break
+                    if found_mine:
+                        break
+
+            # 3.3 Down-Arrow Scan (Fallback if not found moving up)
+            if not found_mine:
+                self.log_signal.emit("[ระบบมาร์คแมพ] ⬇️ กำลังกดลูกศรลง (Down Arrow) สแกนหา 'Mine Job 🚚'...")
+                for step in range(40):
+                    try:
+                        win32api.keybd_event(win32con.VK_DOWN, 0x50, 1, 0)
+                        time.sleep(0.02)
+                        win32api.keybd_event(win32con.VK_DOWN, 0x50, 1 | win32con.KEYEVENTF_KEYUP, 0)
+                    except Exception:
+                        self.send_game_key("down", duration=0.02)
+
+                    time.sleep(0.08)
+                    map_img = self.capture_background(self.hwnd)
+                    if map_img is not None:
+                        h_img, w_img = map_img.shape[:2]
+                        crop_legend = map_img[:, int(w_img * 0.55):w_img]
+                        for tpl_img, t_name in clean_templates:
+                            if crop_legend.shape[0] >= tpl_img.shape[0] and crop_legend.shape[1] >= tpl_img.shape[1]:
+                                res = cv2.matchTemplate(crop_legend, tpl_img, cv2.TM_CCOEFF_NORMED)
+                                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                if max_val >= 0.55:
+                                    found_mine = True
+                                    target_x = int(w_img * 0.55) + max_loc[0] + tpl_img.shape[1] // 2
+                                    target_y = max_loc[1] + tpl_img.shape[0] // 2
+                                    target_pos = (target_x, target_y)
+                                    self.log_signal.emit(f"[ระบบมาร์คแมพ] 🎯 สแกนพบแถบ 'Mine Job 🚚' สำเร็จ ({t_name} ความแม่นยำ {int(max_val * 100)}% ขั้นที่ {step+1})!")
+                                    break
+                    if found_mine:
+                        break
 
             if not found_mine:
                 self.log_signal.emit("[ระบบมาร์คแมพ] ⚠️ สแกนครบทุกแถวแล้วไม่พบ 'Mine Job' — ปิดแผนที่เพื่อความปลอดภัย")
@@ -3166,9 +3233,19 @@ class MacroWorker(QThread):
                     "message": "สแกนครบทุกแถวแล้วไม่พบแถบ Mine Job บนแผนที่"
                 }
 
-            # 4. Press Enter ONCE to mark Waypoint on Mine Job
-            self.log_signal.emit("[ระบบมาร์คแมพ] 📍 4. กด Enter 1 ครั้งเพื่อปักหมุด Waypoint...")
-            time.sleep(0.10)
+            # 4. Click and Press Enter to mark Waypoint on Mine Job
+            self.log_signal.emit("[ระบบมาร์คแมพ] 📍 4. กดเลือกและปักหมุด Waypoint...")
+            if target_pos:
+                screen_pt = self.client_to_screen(target_pos[0], target_pos[1])
+                try:
+                    win32api.SetCursorPos(screen_pt)
+                    time.sleep(0.08)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.05)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                except Exception:
+                    pass
+            time.sleep(0.12)
             try:
                 win32api.keybd_event(win32con.VK_RETURN, 0x1C, 0, 0)
                 time.sleep(0.08)
