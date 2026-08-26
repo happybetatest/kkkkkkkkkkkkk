@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.4.2"
+CURRENT_APP_VERSION = "1.4.3"
 
 def get_current_version():
     try:
@@ -2857,27 +2857,27 @@ class MacroWorker(QThread):
                     "message": "ไม่พบไอคอน Mine Job (รถสีเหลือง) บนแผนที่ และยังไม่ได้บันทึกพิกัดไว้ กรุณาเลื่อนแผนที่ให้เห็นไอคอน หรือกดบันทึกพิกัดในโปรแกรม"
                 }
 
-            # 5. Click target coordinate to place Waypoint
-            self.log_signal.emit(f"[ระบบมาร์คแมพ] ตรวจพบเป้าหมาย ({found_by}) ที่ตำแหน่ง ({target_x}, {target_y}) — กำลังปักหมุด...")
+            # 5. Double click left mouse on target coordinate to place Waypoint
+            self.log_signal.emit(f"[ระบบมาร์คแมพ] ตรวจพบเป้าหมาย ({found_by}) ที่ตำแหน่ง ({target_x}, {target_y}) — กำลังดับเบิ้ลคลิกปักหมุด...")
             
             screen_pt = self.client_to_screen(target_x, target_y)
             try:
                 win32api.SetCursorPos(screen_pt)
                 time.sleep(0.08)
+                # First click
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(0.12)
+                time.sleep(0.08)
+                # Second click (double-click)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             except Exception:
                 self.bg_click(self.hwnd, target_x, target_y)
-                time.sleep(0.12)
+                time.sleep(0.08)
                 self.bg_click(self.hwnd, target_x, target_y)
 
-            time.sleep(0.10)
-            self.send_game_key("Enter", duration=0.10)
             time.sleep(0.5)
 
             # 6. Capture proof with waypoint marker
@@ -2887,12 +2887,10 @@ class MacroWorker(QThread):
                 cv2.circle(marked_img, (target_x, target_y), 18, (0, 255, 0), 2)
                 cv2.imwrite(marked_path, marked_img)
 
-            # 7. Close map (ESC)
-            self.log_signal.emit("[ระบบมาร์คแมพ] กำลังปิดแผนที่กลับเข้าสู่เกม (กด ESC)...")
-            self.send_game_key("ESC", duration=0.12)
+            # 7. Close map (Press P)
+            self.log_signal.emit("[ระบบมาร์คแมพ] กำลังปิดแผนที่กลับเข้าสู่เกม (กด P)...")
+            self.send_game_key("P", duration=0.12)
             time.sleep(0.4)
-            self.send_game_key("ESC", duration=0.12)
-            time.sleep(0.2)
 
             self.log_signal.emit("[ระบบมาร์คแมพ] ✅ ปักหมุด Waypoint จุดขุดบนแผนที่สำเร็จเรียบร้อยแล้ว!")
             return {
@@ -2902,7 +2900,7 @@ class MacroWorker(QThread):
             }
         except Exception as error:
             try:
-                self.send_game_key("ESC", duration=0.12)
+                self.send_game_key("P", duration=0.12)
             except Exception:
                 pass
             return {"success": False, "message": f"เกิดข้อผิดพลาดในการมาร์คแมพ: {error}"}
