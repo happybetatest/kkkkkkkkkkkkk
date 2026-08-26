@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.3.9"
+CURRENT_APP_VERSION = "1.4.0"
 
 def get_current_version():
     try:
@@ -517,15 +517,18 @@ class DiscordRemoteWorker(QObject):
         if not matched_prefix or not extracted_cmd:
             return
 
-        cmd = extracted_cmd.lower()
+        parts = extracted_cmd.split(maxsplit=1)
+        main_cmd = parts[0].lower() if parts else ""
+        arg = parts[1].strip() if len(parts) > 1 else ""
         pfx = self.command_prefix
         tag_prefix = f"🤖 **[{self.bot_name}]**"
 
         # 1. HELP COMMAND
-        if cmd in ("help", "คำสั่ง", "เมนู", "menu"):
+        if main_cmd in ("help", "คำสั่ง", "เมนู", "menu"):
             help_text = (
                 f"🎮 **FiveM Farming [{self.bot_name}] — เมนูคำสั่งควบคุมระยะไกล**\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚀 `{pfx}เข้าเกม [IP/cfx]` : **สั่งเปิด FiveM และเชื่อมต่อเข้าเซิร์ฟเวอร์ทันที**\n"
                 f"📦 `{pfx}check` หรือ `{pfx}bag` : **เปิดกระเป๋า ตรวจเช็คทอง/เพชร และถ่ายรูปส่งกลับมา**\n"
                 f"🗑️ `{pfx}discard` หรือ `{pfx}ทิ้งทอง` : **สั่งทิ้งทอง กดยืนยัน และกลับไปเริ่มฟาร์มต่อให้อัตโนมัติ**\n"
                 f"📸 `{pfx}screen` : ถ่ายภาพหน้าจอ FiveM สดๆ\n"
@@ -540,8 +543,35 @@ class DiscordRemoteWorker(QObject):
             send_discord_rest_message(self.bot_token, channel_id, help_text, reply_to_message_id=msg_id)
             return
 
-        # 2. CHECK BAG & SEND SCREENSHOT
-        if cmd in ("check", "bag", "กระเป๋า", "ทอง", "gold"):
+        # 2. CONNECT / JOIN FIVEM SERVER
+        if main_cmd in ("connect", "join", "เข้าเกม", "เข้าเกมส์", "เข้าเซิฟ", "เข้าเซิร์ฟ", "เล่น", "server", "ip"):
+            target_server = arg
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("connect_server", {"server": target_server, "callback": callback})
+
+            try:
+                res = await asyncio.wait_for(future, timeout=15.0)
+                msg_text = res.get("message", "กำลังเปิดเกม FiveM...")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} 🚀 **{msg_text}**",
+                    reply_to_message_id=msg_id
+                )
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ การสั่งเข้าเกมหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 3. CHECK BAG & SEND SCREENSHOT
+        if main_cmd in ("check", "bag", "กระเป๋า", "ทอง", "gold"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
                 f"{tag_prefix} ⏳ กำลังสลับไป FiveM และเปิดกระเป๋าเพื่อถ่ายรูป กรุณารอสักครู่...",
@@ -589,8 +619,8 @@ class DiscordRemoteWorker(QObject):
                 )
             return
 
-        # 3. DISCARD GOLD & RESUME FARMING
-        if cmd in ("discard", "dump", "drop", "ทิ้งทอง", "ทิ้ง"):
+        # 4. DISCARD GOLD & RESUME FARMING
+        if main_cmd in ("discard", "dump", "drop", "ทิ้งทอง", "ทิ้ง"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
                 f"{tag_prefix} 🗑️ กำลังเปิดกระเป๋าเพื่อกดทิ้งทอง และเริ่มฟาร์มต่อให้อัตโนมัติ...",
@@ -632,8 +662,8 @@ class DiscordRemoteWorker(QObject):
                 )
             return
 
-        # 4. CAPTURE SCREEN
-        if cmd in ("screen", "screenshot", "จอ", "ภาพ"):
+        # 5. CAPTURE SCREEN
+        if main_cmd in ("screen", "screenshot", "จอ", "ภาพ"):
             future = asyncio.Future()
 
             def callback(result):
@@ -670,8 +700,8 @@ class DiscordRemoteWorker(QObject):
                 )
             return
 
-        # 5. START MACRO
-        if cmd in ("start", "เริ่ม", "on"):
+        # 6. START MACRO
+        if main_cmd in ("start", "เริ่ม", "on"):
             future = asyncio.Future()
 
             def callback(result):
@@ -687,8 +717,8 @@ class DiscordRemoteWorker(QObject):
             )
             return
 
-        # 6. STOP MACRO
-        if cmd in ("stop", "หยุด", "off", "pause"):
+        # 7. STOP MACRO
+        if main_cmd in ("stop", "หยุด", "off", "pause"):
             future = asyncio.Future()
 
             def callback(result):
@@ -704,8 +734,8 @@ class DiscordRemoteWorker(QObject):
             )
             return
 
-        # 7. FEED ACTION
-        if cmd in ("feed", "กินข้าว", "กินน้ำ", "อาหาร", "กิน"):
+        # 8. FEED ACTION
+        if main_cmd in ("feed", "กินข้าว", "กินน้ำ", "อาหาร", "กิน"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
                 f"{tag_prefix} 🍗 กำลังเริ่มกระบวนการกินน้ำ (ช่อง 6) และอาหาร (ช่อง 7)...",
@@ -736,8 +766,8 @@ class DiscordRemoteWorker(QObject):
                 )
             return
 
-        # 8. STORE DIAMONDS
-        if cmd in ("store", "เก็บเพชร", "เก็บของ", "รถ", "diamond", "เพชร"):
+        # 9. STORE DIAMONDS
+        if main_cmd in ("store", "เก็บเพชร", "เก็บของ", "รถ", "diamond", "เพชร"):
             wait_id = send_discord_rest_message(
                 self.bot_token, channel_id,
                 f"{tag_prefix} 💎 กำลังเริ่มกระบวนการเก็บเพชรลงท้ายรถ...",
@@ -776,8 +806,8 @@ class DiscordRemoteWorker(QObject):
                 )
             return
 
-        # 9. STATUS
-        if cmd in ("status", "สถานะ", "info"):
+        # 10. STATUS
+        if main_cmd in ("status", "สถานะ", "info"):
             future = asyncio.Future()
 
             def callback(result):
@@ -3254,6 +3284,26 @@ class MainWindow(QMainWindow):
         roi_layout.addWidget(self.test_store_btn)
         config_tab_layout.addWidget(roi_box)
 
+        # Quick Connect Server Box
+        server_box = QGroupBox("🚀 เข้าเซิร์ฟเวอร์ FiveM อัตโนมัติ (Quick Connect)")
+        server_box.setObjectName("ConfigGroup")
+        server_layout = QVBoxLayout(server_box)
+        server_layout.setSpacing(6)
+        
+        server_input_row = QHBoxLayout()
+        self.server_address_input = QLineEdit()
+        self.server_address_input.setPlaceholderText("IP เซิร์ฟเวอร์ หรือ cfx.re/join/xxxxxx (เช่น 103.xxx.xxx:30120)")
+        self.server_address_input.setText(self.server_address)
+        self.server_address_input.editingFinished.connect(self.on_server_address_edited)
+        self.btn_connect_server = QPushButton("🚀 เข้าเกม FiveM ทันที")
+        self.btn_connect_server.setStyleSheet("QPushButton { background-color: #6366f1; border: none; color: white; font-weight: bold; font-size: 12px; border-radius: 6px; padding: 6px 12px; }")
+        self.btn_connect_server.clicked.connect(lambda: self.launch_and_connect_server())
+        
+        server_input_row.addWidget(self.server_address_input)
+        server_input_row.addWidget(self.btn_connect_server)
+        server_layout.addLayout(server_input_row)
+        config_tab_layout.addWidget(server_box)
+
         toggle_box = QGroupBox("เปิด/ปิดฟังก์ชัน")
         toggle_layout = QVBoxLayout(toggle_box)
         self.auto_feed_cb = QCheckBox("ระบบกินข้าว/น้ำอัตโนมัติ")
@@ -3813,12 +3863,14 @@ class MainWindow(QMainWindow):
                 self.discord_admin_id = str(private_data.get("discord_admin_id", "")).strip()
                 self.discord_remote_enabled = bool(private_data.get("discord_remote_enabled", False))
                 self.discord_command_prefix = str(private_data.get("discord_command_prefix", default_prefix)).strip() or default_prefix
+                self.server_address = str(private_data.get("server_address", "")).strip()
         except Exception:
             self.discord_webhook_url = ""
             self.discord_bot_token = ""
             self.discord_admin_id = ""
             self.discord_remote_enabled = False
             self.discord_command_prefix = default_prefix
+            self.server_address = ""
 
     def save_private_settings(self):
         try:
@@ -3832,6 +3884,7 @@ class MainWindow(QMainWindow):
                         "discord_admin_id": self.discord_admin_id,
                         "discord_remote_enabled": self.discord_remote_enabled,
                         "discord_command_prefix": self.discord_command_prefix,
+                        "server_address": self.server_address,
                     },
                     stream, indent=2, ensure_ascii=False
                 )
@@ -4108,6 +4161,50 @@ class MainWindow(QMainWindow):
                 prefix=self.discord_command_prefix,
             )
 
+    def on_server_address_edited(self):
+        self.server_address = self.server_address_input.text().strip()
+        self.save_private_settings()
+
+    def launch_and_connect_server(self, server_address=""):
+        target = str(server_address).strip() or self.server_address
+        if not target and hasattr(self, "server_address_input"):
+            target = self.server_address_input.text().strip()
+        if not target:
+            self.write_log("[ระบบเข้าเกม] ⚠️ ยังไม่ได้ระบุ IP เซิร์ฟเวอร์ หรือ ลิงก์ cfx")
+            return False, "ยังไม่ได้ระบุ IP เซิร์ฟเวอร์ หรือ ลิงก์ cfx (เช่น !เข้าเกม 103.xxx.xxx:30120 หรือ !เข้าเกม cfx.re/join/xxxxxx)"
+        
+        self.server_address = target
+        if hasattr(self, "server_address_input"):
+            self.server_address_input.setText(target)
+        self.save_private_settings()
+
+        clean_target = target
+        if clean_target.startswith("fivem://connect/"):
+            uri = clean_target
+            clean_target = clean_target[len("fivem://connect/"):]
+        elif clean_target.startswith("https://cfx.re/join/"):
+            code = clean_target.split("cfx.re/join/")[-1].strip()
+            uri = f"fivem://connect/cfx.re/join/{code}"
+        elif clean_target.startswith("http://cfx.re/join/"):
+            code = clean_target.split("cfx.re/join/")[-1].strip()
+            uri = f"fivem://connect/cfx.re/join/{code}"
+        elif clean_target.startswith("cfx.re/join/"):
+            uri = f"fivem://connect/{clean_target}"
+        else:
+            uri = f"fivem://connect/{clean_target}"
+
+        self.write_log(f"[ระบบเข้าเกม] 🚀 กำลังสั่งเปิด FiveM และเชื่อมต่อไปยัง: {clean_target}")
+        try:
+            os.startfile(uri)
+            return True, f"กำลังเปิด FiveM เพื่อเชื่อมต่อไปยัง: `{clean_target}`"
+        except Exception as e:
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "", uri], shell=True)
+                return True, f"กำลังเปิด FiveM เพื่อเชื่อมต่อไปยัง: `{clean_target}`"
+            except Exception as e2:
+                self.write_log(f"[ระบบเข้าเกม] ❌ ไม่สามารถเปิด FiveM ได้: {e2}")
+                return False, f"ไม่สามารถเปิด FiveM ได้: {e2}"
+
     def restart_discord_bot(self):
         self.on_discord_remote_edited()
         if not self.discord_remote:
@@ -4134,7 +4231,21 @@ class MainWindow(QMainWindow):
     @Slot(str, object)
     def on_discord_remote_action(self, action_name, callback):
         try:
-            if action_name == "check_bag":
+            if action_name == "connect_server":
+                payload = callback if isinstance(callback, dict) else {}
+                cb = payload.get("callback")
+                server_addr = str(payload.get("server", "")).strip() or self.server_address
+                if not server_addr and hasattr(self, "server_address_input"):
+                    server_addr = self.server_address_input.text().strip()
+                if not server_addr:
+                    if cb:
+                        cb({"success": False, "message": "ยังไม่ได้ระบุ IP เซิร์ฟเวอร์ (เช่น !เข้าเกม 103.xxx.xxx:30120 หรือ !เข้าเกม cfx.re/join/xxxxxx)"})
+                    return
+                success, msg = self.launch_and_connect_server(server_addr)
+                if cb:
+                    cb({"success": success, "message": msg})
+                return
+            elif action_name == "check_bag":
                 res = self.worker.execute_remote_check_bag()
                 callback(res)
             elif action_name == "discard_gold":
