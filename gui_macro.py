@@ -593,6 +593,7 @@ class DiscordRemoteWorker(QObject):
                 f"🚙 `{pfx}car` หรือ `{pfx}เบิกรถ` : **กด E ค้าง 2วิ ➔ เลือกรถ ➔ กด Select Vehicle**\n"
                 f"🚘 `{pfx}drive` หรือ `{pfx}ขับออโต้` : **กด '-' (ข) ➔ คลิกเปิด Auto Drive อัตโนมัติ**\n"
                 f"📦 `{pfx}check` หรือ `{pfx}bag` : **เปิดกระเป๋า ตรวจเช็คทอง/เพชร และถ่ายรูปส่งกลับมา**\n"
+                f"🚪 `{pfx}close` หรือ `{pfx}ปิดกระเป๋า` หรือ `{pfx}t` : **สั่งกด T เพื่อปิดกระเป๋าทันที**\n"
                 f"🗑️ `{pfx}discard` หรือ `{pfx}ทิ้งทอง` : **สั่งทิ้งทอง กดยืนยัน และกลับไปเริ่มฟาร์มต่อให้อัตโนมัติ**\n"
                 f"📸 `{pfx}screen` : ถ่ายภาพหน้าจอ FiveM สดๆ\n"
                 f"📊 `{pfx}status` : ตรวจสอบสถานะการทำงานปัจจุบัน\n"
@@ -1048,6 +1049,46 @@ class DiscordRemoteWorker(QObject):
                 send_discord_rest_message(
                     self.bot_token, channel_id,
                     f"{tag_prefix} ⚠️ กระบวนการเปิดระบบขับออโต้หมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 15. CLOSE BAG / PRESS T (t / close / ปิดกระเป๋า / ปิด / closet / ปิดเป๋า / กดt)
+        if main_cmd in ("t", "close", "ปิดกระเป๋า", "ปิด", "closet", "ปิดเป๋า", "กดt", "ปิดหน้าต่าง"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 🚪 กำลังกด T เพื่อปิดกระเป๋า...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("close_bag", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=15.0)
+                img_path = res.get("image_path")
+                msg_text = res.get("message", "กดปุ่ม T ปิดกระเป๋าเรียบร้อยแล้ว")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 🚪 **{msg_text}**",
+                    file_path=img_path,
+                    reply_to_message_id=msg_id
+                )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ กระบวนการกด T ปิดกระเป๋าหมดเวลา",
                     reply_to_message_id=msg_id
                 )
             return
@@ -2879,6 +2920,35 @@ class MacroWorker(QThread):
                 "status_info": f"ข้อผิดพลาด: {error}",
                 "gold_info": "ผิดพลาด",
             }
+
+    def execute_remote_close_bag(self):
+        """Press T to close inventory/chat and capture confirmation screenshot."""
+        try:
+            if not self.hwnd:
+                self.hwnd = self.get_window_hwnd(WINDOW_NAME)
+            if not self.hwnd:
+                return {"success": False, "message": "ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนสั่งปิดกระเป๋า"}
+
+            self.log_signal.emit("[ระบบปิดกระเป๋า] 🚪 กำลังกดปุ่ม T เพื่อปิดกระเป๋า...")
+            self.activate_game_window()
+            time.sleep(0.2)
+
+            self.send_game_key("t", duration=0.20)
+            time.sleep(0.6)
+
+            proof_path = get_writable_path("discord_close_bag_capture.png")
+            final_img = self.capture_background(self.hwnd)
+            if final_img is not None:
+                cv2.imwrite(proof_path, final_img)
+
+            self.log_signal.emit("[ระบบปิดกระเป๋า] ✅ กดปุ่ม T ปิดกระเป๋าเรียบร้อยแล้ว!")
+            return {
+                "success": True,
+                "message": "กดปุ่ม T ปิดกระเป๋าเรียบร้อยแล้ว!",
+                "image_path": proof_path if os.path.isfile(proof_path) else None,
+            }
+        except Exception as error:
+            return {"success": False, "message": f"เกิดข้อผิดพลาดในการกด T ปิดกระเป๋า: {error}"}
 
     def execute_remote_discard_gold(self):
         """Open inventory, click All and Confirm to discard gold, then resume farming."""
@@ -5021,6 +5091,13 @@ class MainWindow(QMainWindow):
         self.write_log("[ระบบขับออโต้] กำลังทดสอบเปิดระบบขับออโต้ (กด '-' -> คลิก Auto Drive)...")
         threading.Thread(target=self.worker.execute_remote_auto_drive, daemon=True).start()
 
+    def test_close_bag_sequence(self):
+        if not self.worker.hwnd:
+            self.write_log("[!] ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนสั่งปิดกระเป๋า")
+            return
+        self.write_log("[ระบบปิดกระเป๋า] กำลังทดสอบกด T ปิดกระเป๋า...")
+        threading.Thread(target=self.worker.execute_remote_close_bag, daemon=True).start()
+
     def select_map_mark_region(self):
         if not self.worker.hwnd: return
         self.hide()
@@ -5175,6 +5252,9 @@ class MainWindow(QMainWindow):
                 callback(res)
             elif action_name == "check_bag":
                 res = self.worker.execute_remote_check_bag()
+                callback(res)
+            elif action_name == "close_bag":
+                res = self.worker.execute_remote_close_bag()
                 callback(res)
             elif action_name == "discard_gold":
                 res = self.worker.execute_remote_discard_gold()
