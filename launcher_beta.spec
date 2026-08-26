@@ -1,4 +1,4 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 
 from PyInstaller.utils.hooks import collect_data_files
 
@@ -9,7 +9,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=certifi_data,
-    hiddenimports=["keyauth_helper"],
+    hiddenimports=["keyauth_helper", "loading_assets"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

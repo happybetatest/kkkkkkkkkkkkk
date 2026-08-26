@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import json
 import os
 import shutil
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from keyauth_helper import KeyAuthClient, load_saved_key, save_key, get_hwid
+from loading_assets import AnimatedLoadingWidget
 
 
 REPOSITORY = "happybetatest/kkkkkkkkkkkkk"
@@ -180,34 +181,31 @@ class LauncherWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FiveM Farming Launcher (Beta / Test)")
-        self.setFixedSize(540, 300)
+        self.setFixedSize(540, 360)
         self.setStyleSheet(
-            "QMainWindow, QWidget { background: #f8fafc; font-family: 'Segoe UI', Tahoma, sans-serif; }"
-            "QLabel { color: #0f172a; }"
-            "QProgressBar { height: 18px; text-align: center; border-radius: 9px; background: #e2e8f0; }"
-            "QProgressBar::chunk { background: #8b5cf6; border-radius: 9px; }"
-            "QLineEdit { padding: 8px 12px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: white; font-size: 13px; color: #1e293b; }"
-            "QLineEdit:focus { border-color: #8b5cf6; }"
+            "QMainWindow, QWidget { background: #fffbeb; font-family: 'Segoe UI', Tahoma, sans-serif; }"
+            "QLabel { color: #78350f; }"
+            "QLineEdit { padding: 8px 12px; border: 1.5px solid #d97706; border-radius: 6px; background: white; font-size: 13px; color: #1e293b; }"
+            "QLineEdit:focus { border-color: #b45309; }"
             "QPushButton { padding: 8px 16px; border-radius: 6px; font-weight: bold; font-size: 13px; }"
-            "QPushButton#btn_primary { background: #8b5cf6; color: white; border: none; }"
-            "QPushButton#btn_primary:hover { background: #7c3aed; }"
-            "QPushButton#btn_secondary { background: #e2e8f0; color: #334155; border: none; }"
-            "QPushButton#btn_secondary:hover { background: #cbd5e1; }"
+            "QPushButton#btn_primary { background: #f59e0b; color: white; border: none; }"
+            "QPushButton#btn_primary:hover { background: #d97706; }"
+            "QPushButton#btn_secondary { background: #fef3c7; color: #78350f; border: 1px solid #d97706; }"
+            "QPushButton#btn_secondary:hover { background: #fde68a; }"
         )
 
         self.central = QWidget()
         self.layout = QVBoxLayout(self.central)
-        self.layout.setContentsMargins(28, 24, 28, 24)
-        self.layout.setSpacing(14)
+        self.layout.setContentsMargins(28, 20, 28, 20)
+        self.layout.setSpacing(10)
         self.setCentralWidget(self.central)
 
         # Progress / Status View Components
         self.title_label = QLabel("กำลังตรวจสอบสิทธิ์การใช้งาน (Beta Channel)…")
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #5b21b6;")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #78350f;")
         self.detail_label = QLabel("กำลังเชื่อมต่อเซิร์ฟเวอร์...")
-        self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
+        self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
+        self.progress = AnimatedLoadingWidget()
 
         # License Input View Components
         self.key_container = QWidget()
@@ -216,7 +214,7 @@ class LauncherWindow(QMainWindow):
         key_layout.setSpacing(10)
 
         self.hwid_label = QLabel(f"HWID: {get_hwid()}")
-        self.hwid_label.setStyleSheet("font-size: 11px; color: #94a3b8;")
+        self.hwid_label.setStyleSheet("font-size: 11px; color: #b45309;")
 
         self.key_input = QLineEdit()
         self.key_input.setPlaceholderText("กรอก License Key สำหรับเวอร์ชัน Beta...")
@@ -253,7 +251,7 @@ class LauncherWindow(QMainWindow):
         if saved_key:
             self.title_label.setText("กำลังตรวจสอบสิทธิ์การใช้งาน (Beta)…")
             self.detail_label.setText("กำลังยืนยันคีย์กับระบบ KeyAuth...")
-            self.progress.setValue(20)
+            self.progress.set_progress(20)
             self.verify_key(saved_key)
         else:
             self.show_key_input()
@@ -265,7 +263,7 @@ class LauncherWindow(QMainWindow):
             self.detail_label.setStyleSheet("font-size: 12px; color: #ef4444; font-weight: bold;")
         else:
             self.detail_label.setText("กรอกคีย์เพื่อปลดล็อกและทดสอบเวอร์ชัน Beta")
-            self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
+            self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
 
         self.progress.hide()
         self.key_container.show()
@@ -282,10 +280,10 @@ class LauncherWindow(QMainWindow):
         self.btn_submit.setText("กำลังตรวจสอบ...")
         self.key_container.hide()
         self.progress.show()
-        self.progress.setValue(25)
+        self.progress.set_progress(25)
         self.title_label.setText("กำลังตรวจสอบ License Key…")
         self.detail_label.setText("กำลังยืนยันข้อมูลกับเซิร์ฟเวอร์...")
-        self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
+        self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
 
         self.verify_key(key)
 
@@ -300,7 +298,7 @@ class LauncherWindow(QMainWindow):
 
         if success:
             save_key(self.license_worker.key)
-            self.progress.setValue(50)
+            self.progress.set_progress(50)
             expiry = info.get("expiry", "ไม่ระบุ")
             self.title_label.setText("สิทธิ์การใช้งานถูกต้อง (Beta Active)")
             self.detail_label.setText(f"ยินดีต้อนรับ! วันหมดอายุ: {expiry}")
@@ -313,8 +311,8 @@ class LauncherWindow(QMainWindow):
     def start_update_check(self):
         self.title_label.setText("กำลังตรวจสอบการอัปเดตเวอร์ชัน Beta…")
         self.detail_label.setText("กำลังเชื่อมต่อเซิร์ฟเวอร์ GitHub...")
-        self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
-        self.progress.setValue(60)
+        self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
+        self.progress.set_progress(60)
 
         self.update_worker = UpdateWorker()
         self.update_worker.status.connect(self.on_update_status)
@@ -325,7 +323,7 @@ class LauncherWindow(QMainWindow):
     def on_update_status(self, title, detail, progress_value):
         self.title_label.setText(title)
         self.detail_label.setText(detail)
-        self.progress.setValue(progress_value)
+        self.progress.set_progress(progress_value)
 
     def on_update_failed(self, error):
         self.title_label.setText("การอัปเดตล้มเหลว")
@@ -335,8 +333,8 @@ class LauncherWindow(QMainWindow):
         self.close()
 
     def on_update_ready(self, app_path):
-        self.progress.setValue(100)
-        QTimer.singleShot(400, lambda: self.launch_app(app_path))
+        self.progress.set_progress(100)
+        QTimer.singleShot(500, lambda: self.launch_app(app_path))
 
     def launch_app(self, app_path):
         if not os.path.isfile(app_path):

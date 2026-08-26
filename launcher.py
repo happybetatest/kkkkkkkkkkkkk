@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from keyauth_helper import KeyAuthClient, load_saved_key, save_key, get_hwid
+from loading_assets import AnimatedLoadingWidget
 
 
 REPOSITORY = "happybetatest/kkkkkkkkkkkkk"
@@ -163,34 +164,31 @@ class LauncherWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FiveM Farming Launcher")
-        self.setFixedSize(520, 290)
+        self.setFixedSize(540, 360)
         self.setStyleSheet(
-            "QMainWindow, QWidget { background: #f8fafc; font-family: 'Segoe UI', Tahoma, sans-serif; }"
-            "QLabel { color: #0f172a; }"
-            "QProgressBar { height: 18px; text-align: center; border-radius: 9px; background: #e2e8f0; }"
-            "QProgressBar::chunk { background: #10b981; border-radius: 9px; }"
-            "QLineEdit { padding: 8px 12px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: white; font-size: 13px; color: #1e293b; }"
-            "QLineEdit:focus { border-color: #0ea5e9; }"
+            "QMainWindow, QWidget { background: #fffbeb; font-family: 'Segoe UI', Tahoma, sans-serif; }"
+            "QLabel { color: #78350f; }"
+            "QLineEdit { padding: 8px 12px; border: 1.5px solid #d97706; border-radius: 6px; background: white; font-size: 13px; color: #1e293b; }"
+            "QLineEdit:focus { border-color: #b45309; }"
             "QPushButton { padding: 8px 16px; border-radius: 6px; font-weight: bold; font-size: 13px; }"
-            "QPushButton#btn_primary { background: #0ea5e9; color: white; border: none; }"
-            "QPushButton#btn_primary:hover { background: #0284c7; }"
-            "QPushButton#btn_secondary { background: #e2e8f0; color: #334155; border: none; }"
-            "QPushButton#btn_secondary:hover { background: #cbd5e1; }"
+            "QPushButton#btn_primary { background: #f59e0b; color: white; border: none; }"
+            "QPushButton#btn_primary:hover { background: #d97706; }"
+            "QPushButton#btn_secondary { background: #fef3c7; color: #78350f; border: 1px solid #d97706; }"
+            "QPushButton#btn_secondary:hover { background: #fde68a; }"
         )
 
         self.central = QWidget()
         self.layout = QVBoxLayout(self.central)
-        self.layout.setContentsMargins(28, 24, 28, 24)
-        self.layout.setSpacing(14)
+        self.layout.setContentsMargins(28, 20, 28, 20)
+        self.layout.setSpacing(10)
         self.setCentralWidget(self.central)
 
         # Progress / Status View Components
         self.title_label = QLabel("กำลังตรวจสอบสิทธิ์การใช้งาน (KeyAuth)…")
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #0f172a;")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #78350f;")
         self.detail_label = QLabel("กำลังเชื่อมต่อเซิร์ฟเวอร์...")
-        self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
+        self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
+        self.progress = AnimatedLoadingWidget()
 
         # License Input View Components
         self.key_container = QWidget()
@@ -200,8 +198,8 @@ class LauncherWindow(QMainWindow):
 
         hwid_row = QHBoxLayout()
         hwid_str = get_hwid()[:18] + "..."
-        hwid_lbl = QLabel(f"รหัสเครื่อง (HWID): <b style='color:#0ea5e9;'>{hwid_str}</b>")
-        hwid_lbl.setStyleSheet("font-size: 11px; color: #475569;")
+        hwid_lbl = QLabel(f"รหัสเครื่อง (HWID): <b style='color:#b45309;'>{hwid_str}</b>")
+        hwid_lbl.setStyleSheet("font-size: 11px; color: #78350f;")
         btn_copy_hwid = QPushButton("คัดลอก HWID")
         btn_copy_hwid.setObjectName("btn_secondary")
         btn_copy_hwid.setFixedHeight(26)
@@ -224,9 +222,9 @@ class LauncherWindow(QMainWindow):
         key_layout.addLayout(btn_row)
 
         self.layout.addWidget(self.title_label)
+        self.layout.addWidget(self.detail_label)
         self.layout.addWidget(self.progress)
         self.layout.addWidget(self.key_container)
-        self.layout.addWidget(self.detail_label)
 
         self.key_container.hide()
         self.worker = None
@@ -245,7 +243,7 @@ class LauncherWindow(QMainWindow):
         if saved_key:
             self.title_label.setText("กำลังตรวจสอบ License Key...")
             self.detail_label.setText("เชื่อมต่อระบบ KeyAuth...")
-            self.progress.setValue(30)
+            self.progress.set_progress(30)
             self.verify_key(saved_key)
         else:
             self.show_key_input_screen("กรุณากรอก License Key เพื่อเริ่มใช้งาน")
@@ -259,7 +257,7 @@ class LauncherWindow(QMainWindow):
             self.detail_label.setStyleSheet("font-size: 12px; color: #ef4444;")
         else:
             self.detail_label.setText("ใส่ License Key ที่ได้รับจากผู้ขาย")
-            self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
+            self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
 
     def on_activate_clicked(self):
         key = self.key_input.text().strip()
@@ -271,7 +269,7 @@ class LauncherWindow(QMainWindow):
         self.btn_activate.setEnabled(False)
         self.btn_activate.setText("กำลังตรวจสอบ...")
         self.detail_label.setText("กำลังติดต่อเซิร์ฟเวอร์ KeyAuth...")
-        self.detail_label.setStyleSheet("font-size: 12px; color: #0ea5e9;")
+        self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
         self.verify_key(key)
 
     def verify_key(self, key):
@@ -288,7 +286,7 @@ class LauncherWindow(QMainWindow):
             save_key(info.get("key", ""))
             self.key_container.hide()
             self.progress.show()
-            self.progress.setValue(100)
+            self.progress.set_progress(100)
             self.title_label.setText("✅ ยืนยันสิทธิ์สำเร็จ!")
             self.detail_label.setText(f"อายุการใช้งาน: {expiry}")
             self.detail_label.setStyleSheet("font-size: 12px; color: #10b981; font-weight: bold;")
@@ -306,8 +304,8 @@ class LauncherWindow(QMainWindow):
     def set_status(self, title, detail, progress):
         self.title_label.setText(title)
         self.detail_label.setText(detail)
-        self.detail_label.setStyleSheet("font-size: 12px; color: #64748b;")
-        self.progress.setValue(progress)
+        self.detail_label.setStyleSheet("font-size: 12px; color: #92400e;")
+        self.progress.set_progress(progress)
 
     def show_failure(self, error):
         QMessageBox.critical(
