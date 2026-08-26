@@ -142,10 +142,16 @@ class KeyAuthClient:
             return False, f"ข้อผิดพลาดในการตรวจสอบคีย์: {e}", {}
 
 
-def get_key_storage_path():
-    app_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "FiveM-Farming")
+def get_app_dir():
+    cwd = os.path.abspath(os.getcwd())
+    app_name = "FiveM-Farming-Beta" if "Beta" in cwd or "beta" in cwd else "FiveM-Farming"
+    app_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), app_name)
     os.makedirs(app_dir, exist_ok=True)
-    return os.path.join(app_dir, ".license_key")
+    return app_dir
+
+
+def get_key_storage_path():
+    return os.path.join(get_app_dir(), ".license_key")
 
 
 def load_saved_key():

@@ -1,0 +1,50 @@
+﻿import ctypes
+import os
+import shutil
+import subprocess
+import sys
+
+
+def fail(message):
+    ctypes.windll.user32.MessageBoxW(
+        None,
+        message,
+        "FiveM Farming (Beta)",
+        0x10,
+    )
+
+
+def main():
+    app_dir = os.getcwd()
+    pythonw = os.path.join(app_dir, "templates", "_runtime", "pythonw.exe")
+    packaged_macro = os.path.join(app_dir, "templates", "_app", "gui_macro.py")
+    macro = os.path.join(app_dir, "gui_macro.py")
+
+    if not os.path.isfile(pythonw):
+        fail("ไม่พบ Python Runtime กรุณาเปิด Beta Launcher เพื่ออัปเดตใหม่")
+        return 1
+    if not os.path.isfile(packaged_macro):
+        fail("ไม่พบไฟล์มาโคร กรุณาเปิด Beta Launcher เพื่ออัปเดตใหม่")
+        return 1
+
+    shutil.copy2(packaged_macro, macro)
+    packaged_keyauth = os.path.join(app_dir, "templates", "_app", "keyauth_helper.py")
+    if os.path.isfile(packaged_keyauth):
+        shutil.copy2(packaged_keyauth, os.path.join(app_dir, "keyauth_helper.py"))
+    packaged_remote = os.path.join(app_dir, "templates", "_app", "discord_remote.py")
+    if os.path.isfile(packaged_remote):
+        shutil.copy2(packaged_remote, os.path.join(app_dir, "discord_remote.py"))
+    child_env = os.environ.copy()
+    child_env["FIVEM_CAPTURE_BITBLT"] = "1"
+    child_env["FIVEM_FARMING_CHANNEL"] = "beta"
+    subprocess.Popen(
+        [pythonw, macro],
+        cwd=app_dir,
+        env=child_env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

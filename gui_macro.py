@@ -4244,7 +4244,9 @@ def check_license_or_prompt():
             return hashlib.sha256(fallback.encode("utf-8")).hexdigest()
 
         def get_key_storage_path():
-            app_d = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "FiveM-Farming")
+            cwd = os.path.abspath(os.getcwd())
+            app_name = "FiveM-Farming-Beta" if "Beta" in cwd or "beta" in cwd else "FiveM-Farming"
+            app_d = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), app_name)
             os.makedirs(app_d, exist_ok=True)
             return os.path.join(app_d, ".license_key")
 
