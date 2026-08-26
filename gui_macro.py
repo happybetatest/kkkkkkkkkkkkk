@@ -67,7 +67,7 @@ def get_writable_path(filename):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, filename)
 
-CURRENT_APP_VERSION = "1.4.0"
+CURRENT_APP_VERSION = "1.4.1"
 
 def get_current_version():
     try:
@@ -4171,27 +4171,40 @@ class MainWindow(QMainWindow):
             target = self.server_address_input.text().strip()
         if not target:
             self.write_log("[ระบบเข้าเกม] ⚠️ ยังไม่ได้ระบุ IP เซิร์ฟเวอร์ หรือ ลิงก์ cfx")
-            return False, "ยังไม่ได้ระบุ IP เซิร์ฟเวอร์ หรือ ลิงก์ cfx (เช่น !เข้าเกม 103.xxx.xxx:30120 หรือ !เข้าเกม cfx.re/join/xxxxxx)"
+            return False, "ยังไม่ได้ระบุ IP เซิร์ฟเวอร์ หรือ ลิงก์ cfx (เช่น !เข้าเกม 27.254.168.168:30120 หรือ !เข้าเกม cfx.re/join/xxxxxx)"
         
-        self.server_address = target
+        clean_target = target.strip()
+        # 1. Strip URI schemes
+        if clean_target.lower().startswith("fivem://connect/"):
+            clean_target = clean_target[len("fivem://connect/"):].strip()
+        elif clean_target.lower().startswith("fivem://"):
+            clean_target = clean_target[len("fivem://"):].strip()
+        elif clean_target.lower().startswith("https://cfx.re/join/"):
+            clean_target = "cfx.re/join/" + clean_target.split("cfx.re/join/")[-1].strip()
+        elif clean_target.lower().startswith("http://cfx.re/join/"):
+            clean_target = "cfx.re/join/" + clean_target.split("cfx.re/join/")[-1].strip()
+
+        # 2. Strip leading F8 words like "connect " or "join "
+        while True:
+            lower = clean_target.lower()
+            if lower.startswith("connect "):
+                clean_target = clean_target[8:].strip()
+            elif lower.startswith("connect:"):
+                clean_target = clean_target[8:].strip()
+            elif lower.startswith("connect/"):
+                clean_target = clean_target[8:].strip()
+            elif lower.startswith("join "):
+                clean_target = clean_target[5:].strip()
+            else:
+                break
+
+        clean_target = clean_target.strip("\"' ")
+        self.server_address = clean_target
         if hasattr(self, "server_address_input"):
-            self.server_address_input.setText(target)
+            self.server_address_input.setText(clean_target)
         self.save_private_settings()
 
-        clean_target = target
-        if clean_target.startswith("fivem://connect/"):
-            uri = clean_target
-            clean_target = clean_target[len("fivem://connect/"):]
-        elif clean_target.startswith("https://cfx.re/join/"):
-            code = clean_target.split("cfx.re/join/")[-1].strip()
-            uri = f"fivem://connect/cfx.re/join/{code}"
-        elif clean_target.startswith("http://cfx.re/join/"):
-            code = clean_target.split("cfx.re/join/")[-1].strip()
-            uri = f"fivem://connect/cfx.re/join/{code}"
-        elif clean_target.startswith("cfx.re/join/"):
-            uri = f"fivem://connect/{clean_target}"
-        else:
-            uri = f"fivem://connect/{clean_target}"
+        uri = f"fivem://connect/{clean_target}"
 
         self.write_log(f"[ระบบเข้าเกม] 🚀 กำลังสั่งเปิด FiveM และเชื่อมต่อไปยัง: {clean_target}")
         try:
