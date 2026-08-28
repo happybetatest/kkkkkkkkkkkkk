@@ -1209,6 +1209,8 @@ class MacroWorker(QThread):
         self.diamond_mode = "car_timer"
         self.diamond_interval_minutes = 40
         self.discord_webhook_url = ""
+        self.discord_bot_token = ""
+        self.discord_admin_channel_id = ""
         self.auto_feed_enabled = True
         self.auto_store_enabled = True
         self.map_mark_coordinate = None
@@ -1240,6 +1242,7 @@ class MacroWorker(QThread):
         self.last_activity_frame = None
         self.last_activity_sample_time = 0.0
         self.character_idle_since = 0.0
+        self.idle_fail_streak = 0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
         self.last_rockstar_escape_time = 0.0
@@ -1273,6 +1276,11 @@ class MacroWorker(QThread):
                 self.diamond_interval_minutes = max(1, int(value))
             elif key == "webhook":
                 self.discord_webhook_url = str(value or "").strip()
+        elif config_type == "discord_remote":
+            if key == "token":
+                self.discord_bot_token = str(value or "").strip()
+            elif key == "channel_id":
+                self.discord_admin_channel_id = str(value or "").strip()
         elif config_type == "map_mark":
             if key == "coordinate": self.map_mark_coordinate = value
         elif config_type == "ref_res": self.reference_resolution = value
@@ -1372,84 +1380,106 @@ class MacroWorker(QThread):
         self, title, detail, alert_key=None, cooldown_seconds=300.0
     ):
         """Send a rate-limited bug alert and current FiveM frame to Discord."""
-        if not self.discord_webhook_url:
+        has_webhook = bool(self.discord_webhook_url)
+        has_bot_channel = bool(self.discord_bot_token and self.discord_admin_channel_id)
+        if not has_webhook and not has_bot_channel:
             return False
+
         now = time.time()
         key = str(alert_key or title)
         last_sent = self.discord_bug_alert_times.get(key, 0.0)
         if now - last_sent < cooldown_seconds:
             return False
-        # Reserve the cooldown before the request so repeated failures cannot
-        # stall the worker or flood its log on every loop iteration.
         self.discord_bug_alert_times[key] = now
+
         machine_name = os.environ.get("COMPUTERNAME", "Unknown PC")
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         safe_detail = str(detail or "ไม่ทราบรายละเอียด")[:1200]
-        payload = json.dumps(
-            {
-                "username": "FiveM Farming Bug Alert",
-                "content": (
-                    f"⚠️ **ตรวจพบบัค: {title}**\n"
-                    f"รายละเอียด: {safe_detail}\n"
-                    f"เครื่อง: {machine_name}\n"
-                    f"เวลา: {timestamp}"
-                ),
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
-        screenshot = self.capture_background(self.hwnd)
-        screenshot_attached = False
-        headers = {"User-Agent": "FiveM-Farming/1.0"}
-        request_data = payload
-        if screenshot is not None:
-            encoded, png_bytes = cv2.imencode(".png", screenshot)
-            if encoded:
-                # Discord requires multipart/form-data whenever a webhook
-                # message includes a file attachment.
-                boundary = f"----FiveMFarming{int(now * 1000)}"
-                separator = f"--{boundary}\r\n".encode("ascii")
-                request_data = b"".join((
-                    separator,
-                    b'Content-Disposition: form-data; name="payload_json"\r\n',
-                    b"Content-Type: application/json\r\n\r\n",
-                    payload,
-                    b"\r\n",
-                    separator,
-                    b'Content-Disposition: form-data; name="files[0]"; filename="bug_screenshot.png"\r\n',
-                    b"Content-Type: image/png\r\n\r\n",
-                    png_bytes.tobytes(),
-                    b"\r\n",
-                    f"--{boundary}--\r\n".encode("ascii"),
-                ))
-                headers["Content-Type"] = (
-                    f"multipart/form-data; boundary={boundary}"
-                )
-                screenshot_attached = True
-        if not screenshot_attached:
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            self.discord_webhook_url,
-            data=request_data,
-            headers=headers,
-            method="POST",
+        alert_content = (
+            f"⚠️ **[แจ้งเตือนระบบมาโคร FiveM] ตรวจพบบัค: {title}**\n"
+            f"📝 รายละเอียด: {safe_detail}\n"
+            f"💻 เครื่อง: {machine_name}\n"
+            f"⏰ เวลา: {timestamp}"
         )
-        try:
-            with urllib.request.urlopen(
-                request, timeout=10, context=HTTPS_CONTEXT
-            ) as response:
-                if response.status not in (200, 204):
-                    raise RuntimeError(f"Discord HTTP {response.status}")
-            image_status = "พร้อมภาพหน้าจอ" if screenshot_attached else "ไม่มีภาพหน้าจอ"
-            self.log_signal.emit(
-                f"[Discord] ส่งแจ้งเตือนบัคสำเร็จ: {title} ({image_status})"
+
+        screenshot = self.capture_background(self.hwnd)
+        temp_screenshot_path = None
+        if screenshot is not None:
+            temp_screenshot_path = get_writable_path("discord_bug_alert_shot.png")
+            try:
+                cv2.imwrite(temp_screenshot_path, screenshot)
+            except Exception:
+                temp_screenshot_path = None
+
+        # 1. Send via Discord Bot Remote Channel
+        if has_bot_channel:
+            try:
+                send_discord_rest_message(
+                    self.discord_bot_token,
+                    self.discord_admin_channel_id,
+                    content=alert_content,
+                    file_path=temp_screenshot_path
+                )
+                self.log_signal.emit(f"[Discord Remote] 📢 ส่งแจ้งเตือนบัคไปยังห้องแชทบอทสำเร็จ: {title}")
+            except Exception as e:
+                self.log_signal.emit(f"[Discord Remote] ส่งแจ้งเตือนบัคไม่สำเร็จ: {e}")
+
+        # 2. Send via Discord Webhook URL
+        if has_webhook:
+            payload = json.dumps(
+                {
+                    "username": "FiveM Farming Bug Alert",
+                    "content": alert_content,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            screenshot_attached = False
+            headers = {"User-Agent": "FiveM-Farming/1.0"}
+            request_data = payload
+            if screenshot is not None:
+                encoded, png_bytes = cv2.imencode(".png", screenshot)
+                if encoded:
+                    boundary = f"----FiveMFarming{int(now * 1000)}"
+                    separator = f"--{boundary}\r\n".encode("ascii")
+                    request_data = b"".join((
+                        separator,
+                        b'Content-Disposition: form-data; name="payload_json"\r\n',
+                        b"Content-Type: application/json\r\n\r\n",
+                        payload,
+                        b"\r\n",
+                        separator,
+                        b'Content-Disposition: form-data; name="files[0]"; filename="bug_screenshot.png"\r\n',
+                        b"Content-Type: image/png\r\n\r\n",
+                        png_bytes.tobytes(),
+                        b"\r\n",
+                        f"--{boundary}--\r\n".encode("ascii"),
+                    ))
+                    headers["Content-Type"] = (
+                        f"multipart/form-data; boundary={boundary}"
+                    )
+                    screenshot_attached = True
+            if not screenshot_attached:
+                headers["Content-Type"] = "application/json"
+            request = urllib.request.Request(
+                self.discord_webhook_url,
+                data=request_data,
+                headers=headers,
+                method="POST",
             )
-            return True
-        except Exception as error:
-            self.log_signal.emit(
-                f"[Discord] ส่งแจ้งเตือนบัคไม่สำเร็จ: "
-                f"{type(error).__name__}: {error}"
-            )
-            return False
+            try:
+                with urllib.request.urlopen(
+                    request, timeout=10, context=HTTPS_CONTEXT
+                ) as response:
+                    if response.status not in (200, 204):
+                        raise RuntimeError(f"Discord HTTP {response.status}")
+                self.log_signal.emit(
+                    f"[Discord Webhook] ส่งแจ้งเตือนบัคสำเร็จ: {title}"
+                )
+            except Exception as error:
+                self.log_signal.emit(
+                    f"[Discord Webhook] ส่งแจ้งเตือนบัคไม่สำเร็จ: {type(error).__name__}: {error}"
+                )
+        return True
 
     def safe_sleep(self, duration):
         """Sleep in small intervals so thread stops immediately when paused or exiting."""
@@ -2144,6 +2174,7 @@ class MacroWorker(QThread):
         self.last_activity_frame = frame
         if change > 1.15:
             self.character_idle_since = now
+            self.idle_fail_streak = 0
             return False
         if now - self.character_idle_since < 20.0:
             return False
@@ -2151,8 +2182,25 @@ class MacroWorker(QThread):
             "[ระบบทอง] ตรวจพบตัวละครยืนนิ่ง 20 วินาที กำลังเปิดกระเป๋าเช็คทองเต็ม"
         )
         if not self.ensure_inventory_open("[ระบบทอง]"):
+            self.idle_fail_streak += 1
+            if self.idle_fail_streak >= 2:
+                self.log_signal.emit(
+                    "[ระบบทอง] ⚠️ ตรวจพบตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ กำลังพยายามกู้คืนระบบฟาร์ม (กด E เริ่มงานใหม่)..."
+                )
+                self.send_bug_webhook(
+                    "ตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ",
+                    "ตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ ระบบกำลังพยายามกด E เริ่มงานใหม่อัตโนมัติ",
+                    alert_key="idle_inventory_open_failed",
+                    cooldown_seconds=120.0
+                )
+                # Auto-recovery: Close any stuck window and resume farming
+                self.ensure_inventory_closed("[ระบบทอง]")
+                time.sleep(0.5)
+                self.resume_farming_after_inventory()
+                self.idle_fail_streak = 0
             self.character_idle_since = now
             return False
+        self.idle_fail_streak = 0
         self.idle_inventory_recovery = True
         self.idle_inventory_check_until = time.time() + 8.0
         self.character_idle_since = 0.0
@@ -2219,18 +2267,18 @@ class MacroWorker(QThread):
         bag_gray = cv2.cvtColor(bag_crop, cv2.COLOR_BGR2GRAY)
         dark_mask = cv2.inRange(bag_gray, 0, 88)
         dark_ratio = cv2.countNonZero(dark_mask) / float(dark_mask.size)
-        if dark_ratio < 0.15:
+        if dark_ratio < 0.12:
             return False
 
         x_range = (x_start / w_img, x_end / w_img)
         y_range = (scan_y_start / h_img, y_end / h_img)
         for template_path, threshold in (
-            ("templates/all.png", 0.65),
-            ("templates/destroy.png", 0.65),
-            ("templates/gold_ore.png", 0.70),
-            ("templates/diamond_icon.png", 0.75),
-            ("templates/gold.png", 0.70),
-            ("templates/diamond_trunk.png", 0.70),
+            ("templates/all.png", 0.58),
+            ("templates/destroy.png", 0.58),
+            ("templates/gold_ore.png", 0.65),
+            ("templates/diamond_icon.png", 0.68),
+            ("templates/gold.png", 0.65),
+            ("templates/diamond_trunk.png", 0.65),
         ):
             result = self.find_image(
                 bg_img,
@@ -2253,22 +2301,29 @@ class MacroWorker(QThread):
                 f"{log_prefix} กระเป๋าเปิดอยู่แล้ว ไม่กด T ซ้ำ"
             )
             return True
+        for attempt in range(1, 4):
+            if attempt == 1:
+                self.log_signal.emit(
+                    f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังกด T..."
+                )
+            else:
+                self.log_signal.emit(
+                    f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังลองกด T ซ้ำ (รอบที่ {attempt}/3)..."
+                )
+            self.activate_game_window()
+            time.sleep(0.15)
+            if not self.send_game_key("t", duration=0.20):
+                continue
+            time.sleep(1.0)
+            if self.is_inventory_open():
+                self.log_signal.emit(
+                    f"{log_prefix} ตรวจสอบแล้ว: เปิดกระเป๋าสำเร็จ"
+                )
+                return True
         self.log_signal.emit(
-            f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังกด T..."
+            f"{log_prefix} ส่งปุ่ม T ครบ 3 ครั้งแล้ว แต่ยังตรวจไม่พบหน้ากระเป๋า"
         )
-        if not self.send_game_key("t"):
-            return False
-        time.sleep(1.2)
-        opened = self.is_inventory_open()
-        if opened:
-            self.log_signal.emit(
-                f"{log_prefix} ตรวจสอบแล้ว: เปิดกระเป๋าสำเร็จ"
-            )
-        else:
-            self.log_signal.emit(
-                f"{log_prefix} ส่งปุ่ม T แล้ว แต่ยังตรวจไม่พบหน้ากระเป๋า"
-            )
-        return opened
+        return False
 
     def ensure_inventory_closed(self, log_prefix="[ระบบ]"):
         initial_bg = self.capture_background(self.hwnd)
@@ -2690,15 +2745,37 @@ class MacroWorker(QThread):
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 time.sleep(2.0)
-        self.ensure_inventory_open("[ระบบเก็บเพชร]")
+        bag_reopened = self.ensure_inventory_open("[ระบบเก็บเพชร]")
+        if not bag_reopened:
+            self.log_signal.emit("[ระบบเก็บเพชร] ⚠️ เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ กำลังเริ่มระบบฟาร์มและเปิดกระเป๋าใหม่อีกครั้ง...")
+            self.resume_farming_after_inventory()
+            bag_reopened = self.is_inventory_open()
+
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
-            except: pass
-        if stored_successfully:
+            except Exception: pass
+
+        if stored_successfully and bag_reopened:
             self.log_signal.emit(
                 "[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!"
             )
-        return stored_successfully
+            return True
+        elif not stored_successfully:
+            self.send_bug_webhook(
+                "เก็บเพชรลงรถไม่สำเร็จ",
+                "ระบบเปิดท้ายรถได้ แต่ไม่พบไอคอนเพชรหรือปุ่มยืนยัน",
+                alert_key="diamond_store_failed",
+                cooldown_seconds=180.0
+            )
+            return False
+        else:
+            self.send_bug_webhook(
+                "เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ",
+                "เก็บเพชรสำเร็จแต่ไม่สามารถเปิดกระเป๋าเพื่อฟาร์มต่อได้",
+                alert_key="diamond_reopen_bag_failed",
+                cooldown_seconds=180.0
+            )
+            return False
 
     def check_and_run_store_diamonds(self, trigger_storage=False):
         bg_img = self.capture_background(self.hwnd)
@@ -4882,6 +4959,8 @@ class MainWindow(QMainWindow):
         self.worker.set_config("mode", "diamond", self.diamond_mode)
         self.worker.set_config("interval", "diamond", self.diamond_interval_minutes)
         self.worker.set_config("webhook", "diamond", self.discord_webhook_url)
+        self.worker.set_config("token", "discord_remote", self.discord_bot_token)
+        self.worker.set_config("channel_id", "discord_remote", self.discord_admin_id)
         self.worker.set_config("coordinate", "map_mark", self.map_mark_coordinate)
         self.worker.set_config("ref_res", "ref_res", self.reference_resolution)
         self.worker.set_config("template_refs", "template_refs", self.template_reference_sizes)
@@ -5485,6 +5564,8 @@ class MainWindow(QMainWindow):
         self.discord_bot_token = self.discord_token_input.text().strip()
         self.discord_admin_id = self.discord_admin_input.text().strip()
         self.discord_command_prefix = self.discord_prefix_input.text().strip() or "!"
+        self.worker.set_config("token", "discord_remote", self.discord_bot_token)
+        self.worker.set_config("channel_id", "discord_remote", self.discord_admin_id)
         self.save_private_settings()
         if self.discord_remote:
             self.discord_remote.configure(
