@@ -1,4 +1,4 @@
-﻿import ctypes
+import ctypes
 import os
 import shutil
 import subprocess
@@ -34,6 +34,9 @@ def main():
     packaged_remote = os.path.join(app_dir, "templates", "_app", "discord_remote.py")
     if os.path.isfile(packaged_remote):
         shutil.copy2(packaged_remote, os.path.join(app_dir, "discord_remote.py"))
+    packaged_loading = os.path.join(app_dir, "templates", "_app", "loading_assets.py")
+    if os.path.isfile(packaged_loading):
+        shutil.copy2(packaged_loading, os.path.join(app_dir, "loading_assets.py"))
     child_env = os.environ.copy()
     child_env["FIVEM_CAPTURE_BITBLT"] = "1"
     child_env["FIVEM_FARMING_CHANNEL"] = "beta"

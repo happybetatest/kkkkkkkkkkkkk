@@ -130,7 +130,7 @@ class UpdateWorker(QThread):
                         "กำลังติดตั้งไฟล์เวอร์ชันใหม่…",
                         85,
                     )
-                    for name in (APP_EXE, "config.json", "templates", "keyauth_helper.py"):
+                    for name in (APP_EXE, "config.json", "templates", "keyauth_helper.py", "discord_remote.py", "loading_assets.py"):
                         source = os.path.join(staging, name)
                         target = os.path.join(APP_DIR, name)
                         if not os.path.exists(source):
