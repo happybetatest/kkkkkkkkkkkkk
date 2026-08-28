@@ -272,6 +272,19 @@ def release_key_hold(key_name):
     if scancode is not None:
         release_key(scancode, is_extended)
 
+def get_fivem_executable_path():
+    """Find FiveM.exe on the system to pass launch targets like -pure_2 directly."""
+    candidates = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "FiveM", "FiveM.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "FiveM", "FiveM.app", "FiveM.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES", ""), "FiveM", "FiveM.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "FiveM", "FiveM.exe"),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
 # ==========================================
 # DISCORD REMOTE CONTROL ENGINE (EMBEDDED)
 # ==========================================
@@ -587,10 +600,13 @@ class DiscordRemoteWorker(QObject):
             help_text = (
                 f"🎮 **FiveM Farming [{self.bot_name}] — เมนูคำสั่งควบคุมระยะไกล**\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🚀 `{pfx}เข้าเกม [IP/cfx]` : **สั่งเปิด FiveM และเชื่อมต่อเข้าเซิร์ฟเวอร์ทันที**\n"
+                f"🚀 `{pfx}เข้าเกม [IP/cfx]` : **สั่งเปิด FiveM และ Connect เข้าเซิร์ฟเวอร์ทันที (Pure 2)**\n"
+                f"🔄 `{pfx}refresh` หรือ `{pfx}รีเฟรช` : **รีเฟรชการเชื่อมต่อหน้าต่าง FiveM และส่งรูปจอสด**\n"
+                f"🚪 `{pfx}quit` หรือ `{pfx}ออกเกม` : **สั่งปิด/Force Quit เกม FiveM ทันที (แก้เกมค้าง/เข้าไม่ได้)**\n"
+                f"🔄 `{pfx}รีเกม [IP]` : **สั่งปิดเกมเดิม ➔ เปิดใหม่ด้วย pure_2 และเชื่อมต่อเซิร์ฟเวอร์**\n"
                 f"📍 `{pfx}map1` : **เปิดแผนที่ (P) และปักหมุดจุด Mine Job ให้อัตโนมัติ**\n"
                 f"🚗 `{pfx}map2` : **เปิดแผนที่ (P) และปักหมุดพาวรถ (Car Pound 2/2) ให้อัตโนมัติ**\n"
-                f"🚙 `{pfx}car` หรือ `{pfx}เบิกรถ` : **กด E ค้าง 2วิ ➔ เลือกรถ ➔ กด Select Vehicle**\n"
+                f"🚙 `{pfx}car` หรือ `{pfx}เบิกรถ` : **กด E ค้าง 2วิ ➔ เลือกรถ ➔ กด Select Vehicle ➔ รัดเข็มขัด**\n"
                 f"🚘 `{pfx}drive` หรือ `{pfx}ขับออโต้` : **กด '-' (ข) ➔ คลิกเปิด Auto Drive อัตโนมัติ**\n"
                 f"📦 `{pfx}check` หรือ `{pfx}bag` : **เปิดกระเป๋า ตรวจเช็คทอง/เพชร และถ่ายรูปส่งกลับมา**\n"
                 f"🚪 `{pfx}close` หรือ `{pfx}ปิดกระเป๋า` หรือ `{pfx}t` : **สั่งกด T เพื่อปิดกระเป๋าทันที**\n"
@@ -1089,6 +1105,113 @@ class DiscordRemoteWorker(QObject):
                 send_discord_rest_message(
                     self.bot_token, channel_id,
                     f"{tag_prefix} ⚠️ กระบวนการกด T ปิดกระเป๋าหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 16. QUIT / KILL FIVEM GAME (quit / exit / killgame / closegame / ออกเกม / ปิดเกม / คิลเกม / ดับเกม)
+        if main_cmd in ("quit", "exit", "killgame", "closegame", "ออกเกม", "ปิดเกม", "คิลเกม", "ดับเกม", "kill", "forceclose"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 🛑 กำลังสั่ง Force Quit / ปิดเกม FiveM และ GTA...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("kill_game", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=10.0)
+                msg_text = res.get("message", "สั่งปิดเกม FiveM เรียบร้อยแล้ว")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 🛑 **{msg_text}**",
+                    reply_to_message_id=msg_id
+                )
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ การสั่งปิดเกมหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 17. REFRESH FIVEM CONNECTION (refresh / reconnect / รีเฟรช / ต่อใหม่ / รีเฟรชเกม / รี)
+        if main_cmd in ("refresh", "reconnect", "รีเฟรช", "ต่อใหม่", "รีเฟรชเกม", "รี"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 🔄 กำลังรีเฟรชการเชื่อมต่อหน้าต่าง FiveM...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("refresh_game", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=10.0)
+                msg_text = res.get("message", "รีเฟรชการเชื่อมต่อสำเร็จ")
+                img_path = res.get("image_path")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 🔄 **{msg_text}** (<t:{int(time.time())}:T>)",
+                    file_path=img_path,
+                    reply_to_message_id=msg_id
+                )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ การรีเฟรชการเชื่อมต่อหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 18. RESTART FIVEM GAME (restartgame / รีเกม / เข้าใหม่)
+        if main_cmd in ("restartgame", "รีเกม", "เข้าใหม่"):
+            target_server = arg
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                f"{tag_prefix} 🔄 กำลังสั่งปิดเกมเดิม และเปิด FiveM ใหม่ด้วยโหมด pure_2...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("restart_game", {"server": target_server, "callback": callback})
+
+            try:
+                res = await asyncio.wait_for(future, timeout=20.0)
+                msg_text = res.get("message", "สั่งรีเกมและเชื่อมต่อใหม่เรียบร้อยแล้ว")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"{tag_prefix} 🚀 **{msg_text}**",
+                    reply_to_message_id=msg_id
+                )
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    f"{tag_prefix} ⚠️ การสั่งรีเกมหมดเวลา",
                     reply_to_message_id=msg_id
                 )
             return
@@ -4256,10 +4379,25 @@ class ReadmeDialog(QDialog):
                         <td style="padding: 8px 10px;">!เริ่ม / !หยุด</td>
                         <td style="padding: 8px 10px;">สั่งเริ่ม หรือ หยุดพักการทำงานของระบบมาโคร</td>
                     </tr>
-                    <tr style="background-color: #ffffff;">
-                        <td style="padding: 8px 10px;"><b style="background:#e2e8f0; color:#334155; padding:2px 6px; border-radius:4px; font-family:Consolas;">!เข้าเกม [IP]</b></td>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#e0e7ff; color:#3730a3; padding:2px 6px; border-radius:4px; font-family:Consolas;">!เข้าเกม [IP]</b></td>
                         <td style="padding: 8px 10px;">!connect, !join</td>
-                        <td style="padding: 8px 10px;">สั่งเปิด FiveM และ Connect เข้าเซิร์ฟเวอร์ตามที่ระบุ</td>
+                        <td style="padding: 8px 10px;">สั่งเปิด FiveM และ Connect เข้าเซิร์ฟเวอร์ด้วยโหมด <b>pure_2 (ไม่ต้องรีเกม)</b></td>
+                    </tr>
+                    <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#e0f2fe; color:#0369a1; padding:2px 6px; border-radius:4px; font-family:Consolas;">!refresh</b></td>
+                        <td style="padding: 8px 10px;">!รีเฟรช, !ต่อใหม่</td>
+                        <td style="padding: 8px 10px;">รีเฟรชการเชื่อมต่อหน้าต่าง FiveM หลังเข้าเกมใหม่ พร้อมส่งรูปหน้าจอสดกลับมา</td>
+                    </tr>
+                    <tr style="background-color: #ffffff; border-bottom: 1px solid #e2e8f0;">
+                        <td style="padding: 8px 10px;"><b style="background:#fee2e2; color:#b91c1c; padding:2px 6px; border-radius:4px; font-family:Consolas;">!quit</b></td>
+                        <td style="padding: 8px 10px;">!exit, !ออกเกม, !ปิดเกม</td>
+                        <td style="padding: 8px 10px;">สั่ง <b>Force Quit / ปิดเกม FiveM</b> ทันที (แก้ปัญหาติดหน้าโหลด/เข้าเซิร์ฟไม่ได้)</td>
+                    </tr>
+                    <tr style="background-color: #f8fafc;">
+                        <td style="padding: 8px 10px;"><b style="background:#fef3c7; color:#b45309; padding:2px 6px; border-radius:4px; font-family:Consolas;">!รีเกม [IP]</b></td>
+                        <td style="padding: 8px 10px;">!restartgame, !เข้าใหม่</td>
+                        <td style="padding: 8px 10px;">สั่งปิดเกมเดิม ➔ รอ 3 วินาที ➔ เปิดใหม่ด้วย <b>pure_2</b> และเชื่อมต่อเซิร์ฟเวอร์ทันที</td>
                     </tr>
                 </tbody>
             </table>
@@ -4564,7 +4702,7 @@ class MainWindow(QMainWindow):
         config_tab_layout.addWidget(roi_box)
 
         # Quick Connect Server Box
-        server_box = QGroupBox("🚀 เข้าเซิร์ฟเวอร์ FiveM อัตโนมัติ (Quick Connect)")
+        server_box = QGroupBox("🚀 เข้าเซิร์ฟเวอร์ FiveM (Pure 2 / ไม่ต้องรีเกม)")
         server_box.setObjectName("ConfigGroup")
         server_layout = QVBoxLayout(server_box)
         server_layout.setSpacing(6)
@@ -4574,12 +4712,23 @@ class MainWindow(QMainWindow):
         self.server_address_input.setPlaceholderText("IP เซิร์ฟเวอร์ หรือ cfx.re/join/xxxxxx (เช่น 103.xxx.xxx:30120)")
         self.server_address_input.setText(self.server_address)
         self.server_address_input.editingFinished.connect(self.on_server_address_edited)
-        self.btn_connect_server = QPushButton("🚀 เข้าเกม FiveM ทันที")
-        self.btn_connect_server.setStyleSheet("QPushButton { background-color: #6366f1; border: none; color: white; font-weight: bold; font-size: 12px; border-radius: 6px; padding: 6px 12px; }")
-        self.btn_connect_server.clicked.connect(lambda: self.launch_and_connect_server())
         
-        server_input_row.addWidget(self.server_address_input)
-        server_input_row.addWidget(self.btn_connect_server)
+        self.btn_connect_server = QPushButton("🚀 เข้าเซิร์ฟ (Pure 2)")
+        self.btn_connect_server.setStyleSheet("QPushButton { background-color: #6366f1; border: none; color: white; font-weight: bold; font-size: 11px; border-radius: 6px; padding: 6px 10px; } QPushButton:hover { background-color: #4f46e5; }")
+        self.btn_connect_server.clicked.connect(lambda: self.launch_and_connect_server())
+
+        self.btn_refresh_game = QPushButton("🔄 รีเฟรช FiveM")
+        self.btn_refresh_game.setStyleSheet("QPushButton { background-color: #0ea5e9; border: none; color: white; font-weight: bold; font-size: 11px; border-radius: 6px; padding: 6px 10px; } QPushButton:hover { background-color: #0284c7; }")
+        self.btn_refresh_game.clicked.connect(lambda: self.refresh_game_connection(notify_log=True))
+
+        self.btn_kill_game = QPushButton("🚪 ออก/ปิดเกม")
+        self.btn_kill_game.setStyleSheet("QPushButton { background-color: #ef4444; border: none; color: white; font-weight: bold; font-size: 11px; border-radius: 6px; padding: 6px 10px; } QPushButton:hover { background-color: #dc2626; }")
+        self.btn_kill_game.clicked.connect(self.kill_game_process)
+        
+        server_input_row.addWidget(self.server_address_input, 3)
+        server_input_row.addWidget(self.btn_connect_server, 1)
+        server_input_row.addWidget(self.btn_refresh_game, 1)
+        server_input_row.addWidget(self.btn_kill_game, 1)
         server_layout.addLayout(server_input_row)
         config_tab_layout.addWidget(server_box)
 
@@ -5615,19 +5764,93 @@ class MainWindow(QMainWindow):
             self.server_address_input.setText(clean_target)
         self.save_private_settings()
 
-        uri = f"fivem://connect/{clean_target}"
+        fivem_exe = get_fivem_executable_path()
+        if fivem_exe:
+            self.write_log(f"[ระบบเข้าเกม] 🚀 กำลังเปิด FiveM ด้วยโหมด pure_2 (Target: -pure_2) และเชื่อมต่อไปยัง: {clean_target}")
+            try:
+                subprocess.Popen([fivem_exe, "-pure_2", "+connect", clean_target])
+                threading.Thread(target=self._watch_and_refresh_after_connect, daemon=True).start()
+                return True, f"กำลังเปิด FiveM ด้วยโหมด pure_2 เชื่อมต่อไปยัง: `{clean_target}` (ไม่ต้องรีสตาร์ทเกม)"
+            except Exception as e:
+                self.write_log(f"[ระบบเข้าเกม] ⚠️ ไม่สามารถเปิดผ่าน exe ได้ ({e}) กำลังลองเปิดผ่าน URL Protocol...")
 
+        uri = f"fivem://connect/{clean_target}"
         self.write_log(f"[ระบบเข้าเกม] 🚀 กำลังสั่งเปิด FiveM และเชื่อมต่อไปยัง: {clean_target}")
         try:
             os.startfile(uri)
+            threading.Thread(target=self._watch_and_refresh_after_connect, daemon=True).start()
             return True, f"กำลังเปิด FiveM เพื่อเชื่อมต่อไปยัง: `{clean_target}`"
         except Exception as e:
             try:
                 subprocess.Popen(["cmd", "/c", "start", "", uri], shell=True)
+                threading.Thread(target=self._watch_and_refresh_after_connect, daemon=True).start()
                 return True, f"กำลังเปิด FiveM เพื่อเชื่อมต่อไปยัง: `{clean_target}`"
             except Exception as e2:
                 self.write_log(f"[ระบบเข้าเกม] ❌ ไม่สามารถเปิด FiveM ได้: {e2}")
                 return False, f"ไม่สามารถเปิด FiveM ได้: {e2}"
+
+    def _watch_and_refresh_after_connect(self):
+        """Wait for FiveM window to appear after launch and automatically refresh connection."""
+        self.write_log("[ระบบเกม] ⏳ กำลังรอหน้าต่าง FiveM เปิดขึ้นมาเพื่อรีเฟรชการเชื่อมต่อให้อัตโนมัติ...")
+        start_time = time.time()
+        while time.time() - start_time < 90.0:
+            time.sleep(2.0)
+            hwnd = self.worker.get_window_hwnd(WINDOW_NAME)
+            if hwnd:
+                time.sleep(3.0)  # Wait for graphics and rendering initialization
+                self.refresh_game_connection(notify_log=True)
+                self.write_log("[ระบบเกม] 🟢 ตรวจพบหน้าต่าง FiveM แล้ว! รีเฟรชและเชื่อมต่อระบบเรียบร้อยพร้อมใช้งาน")
+                return
+        self.write_log("[ระบบเกม] ⏱️ หมดเวลารอหน้าต่าง FiveM อัตโนมัติ (หากเกมเปิดแล้วสามารถกดปุ่ม '🔄 รีเฟรช FiveM' ได้เลยครับ)")
+
+    def kill_game_process(self):
+        """Force quit FiveM and GTA processes when stuck or cannot join."""
+        self.write_log("[ระบบเกม] 🛑 กำลังสั่งปิด/ออกจากเกม FiveM (Force Quit)...")
+        if hasattr(self, 'worker') and self.worker.is_running:
+            self.toggle_macro()
+        for proc in ("FiveM.exe", "FiveM_GTAProcess.exe", "FiveM_ChromeBrowser.exe", "FiveM_b*.exe", "GTA5.exe"):
+            try:
+                subprocess.run(f"taskkill /f /im {proc} /t", shell=True, capture_output=True, timeout=5)
+            except Exception:
+                pass
+        self.worker.hwnd = None
+        self.update_connection_status(False, "ปิดเกมแล้ว (รอเข้าเกมใหม่)")
+        self.write_log("[ระบบเกม] 🚪 สั่งปิด/ออกเกม FiveM เรียบร้อยแล้ว")
+        return {"success": True, "message": "สั่งปิด/ออกเกม FiveM เรียบร้อยแล้ว"}
+
+    def refresh_game_connection(self, notify_log=True, for_discord=False):
+        """Re-scan and refresh connection to FiveM window, capturing fresh state."""
+        hwnd = self.worker.get_window_hwnd(WINDOW_NAME)
+        if hwnd:
+            self.worker.hwnd = hwnd
+            self.worker.capture_failure_streak = 0
+            self.worker.focus_failure_streak = 0
+            self.worker.character_idle_since = 0.0
+            self.worker.last_activity_frame = None
+            title = self.worker.get_window_title(hwnd) or "FiveM"
+            self.update_connection_status(True, title)
+            if notify_log:
+                self.write_log(f"[ระบบเกม] 🔄 รีเฟรชการเชื่อมต่อ FiveM สำเร็จ: {title}")
+            proof_path = None
+            if for_discord:
+                bg = self.worker.capture_background(hwnd)
+                if bg is not None:
+                    proof_path = get_writable_path("discord_refresh_capture.png")
+                    cv2.imwrite(proof_path, bg)
+            return {
+                "success": True,
+                "message": f"รีเฟรชการเชื่อมต่อ FiveM สำเร็จ: {title}",
+                "image_path": proof_path if proof_path and os.path.isfile(proof_path) else None
+            }
+        else:
+            self.worker.hwnd = None
+            self.update_connection_status(False, "ไม่พบหน้าต่าง FiveM (กรุณาเปิดเกม)")
+            if notify_log:
+                self.write_log("[ระบบเกม] ⚠️ ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนรีเฟรช")
+            return {
+                "success": False,
+                "message": "ไม่พบหน้าต่าง FiveM กรุณาเปิดเกมก่อนรีเฟรช"
+            }
 
     def restart_discord_bot(self):
         self.on_discord_remote_edited()
@@ -5687,6 +5910,22 @@ class MainWindow(QMainWindow):
             elif action_name == "close_bag":
                 res = self.worker.execute_remote_close_bag()
                 callback(res)
+            elif action_name == "kill_game":
+                res = self.kill_game_process()
+                callback(res)
+            elif action_name == "refresh_game":
+                res = self.refresh_game_connection(notify_log=True, for_discord=True)
+                callback(res)
+            elif action_name == "restart_game":
+                self.kill_game_process()
+                time.sleep(3.0)
+                payload = callback if isinstance(callback, dict) else {}
+                cb = payload.get("callback")
+                server_addr = str(payload.get("server", "")).strip() or self.server_address
+                success, msg = self.launch_and_connect_server(server_addr)
+                if cb:
+                    cb({"success": success, "message": f"สั่งรีเกมและเชื่อมต่อใหม่ด้วยโหมด pure_2: {msg}"})
+                return
             elif action_name == "discard_gold":
                 res = self.worker.execute_remote_discard_gold()
                 callback(res)

@@ -541,3 +541,111 @@ class DiscordRemoteWorker(QObject):
             )
             send_discord_rest_message(self.bot_token, channel_id, status_text, reply_to_message_id=msg_id)
             return
+
+        # 10. QUIT / KILL GAME (quit / exit / killgame / closegame / ออกเกม / ปิดเกม / คิลเกม / ดับเกม)
+        if cmd in ("quit", "exit", "killgame", "closegame", "ออกเกม", "ปิดเกม", "คิลเกม", "ดับเกม", "kill", "forceclose"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                "🛑 กำลังสั่ง Force Quit / ปิดเกม FiveM และ GTA...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("kill_game", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=10.0)
+                msg_text = res.get("message", "สั่งปิดเกม FiveM เรียบร้อยแล้ว")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"🛑 **{msg_text}**",
+                    reply_to_message_id=msg_id
+                )
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    "⚠️ การสั่งปิดเกมหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 11. REFRESH CONNECTION (refresh / reconnect / รีเฟรช / ต่อใหม่ / รีเฟรชเกม / รี)
+        if cmd in ("refresh", "reconnect", "รีเฟรช", "ต่อใหม่", "รีเฟรชเกม", "รี"):
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                "🔄 กำลังรีเฟรชการเชื่อมต่อหน้าต่าง FiveM...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("refresh_game", callback)
+
+            try:
+                res = await asyncio.wait_for(future, timeout=10.0)
+                msg_text = res.get("message", "รีเฟรชการเชื่อมต่อสำเร็จ")
+                img_path = res.get("image_path")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"🔄 **{msg_text}** (<t:{int(time.time())}:T>)",
+                    file_path=img_path,
+                    reply_to_message_id=msg_id
+                )
+                if img_path and os.path.isfile(img_path):
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    "⚠️ การรีเฟรชการเชื่อมต่อหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
+
+        # 12. RESTART GAME (restartgame / รีเกม / เข้าใหม่)
+        if cmd.startswith("restartgame") or cmd.startswith("รีเกม") or cmd.startswith("เข้าใหม่"):
+            parts = cmd.split(maxsplit=1)
+            target_server = parts[1].strip() if len(parts) > 1 else ""
+            wait_id = send_discord_rest_message(
+                self.bot_token, channel_id,
+                "🔄 กำลังสั่งปิดเกมเดิม และเปิด FiveM ใหม่ด้วยโหมด pure_2...",
+                reply_to_message_id=msg_id
+            )
+            future = asyncio.Future()
+
+            def callback(result):
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(future.set_result, result)
+
+            self.action_requested.emit("restart_game", {"server": target_server, "callback": callback})
+
+            try:
+                res = await asyncio.wait_for(future, timeout=20.0)
+                msg_text = res.get("message", "สั่งรีเกมและเชื่อมต่อใหม่เรียบร้อยแล้ว")
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    content=f"🚀 **{msg_text}**",
+                    reply_to_message_id=msg_id
+                )
+                if wait_id:
+                    delete_discord_rest_message(self.bot_token, channel_id, wait_id)
+            except asyncio.TimeoutError:
+                send_discord_rest_message(
+                    self.bot_token, channel_id,
+                    "⚠️ การสั่งรีเกมหมดเวลา",
+                    reply_to_message_id=msg_id
+                )
+            return
