@@ -255,7 +255,7 @@ def release_key(scancode, is_extended=False):
     x = Input(ctypes.c_ulong(1), ii_)
     ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
-def send_key_direct(key_name, duration=0.10):
+def send_key_direct(key_name, duration=0.05):
     scancode, is_extended = resolve_scancode(key_name)
     if scancode is not None:
         press_key(scancode, is_extended)
@@ -2122,7 +2122,7 @@ class MacroWorker(QThread):
             self.record_focus_failure("โฟกัส FiveM เกิดข้อผิดพลาด 3 ครั้งติด")
             return None
 
-    def send_game_key(self, key_name, duration=0.10, require_focus=True):
+    def send_game_key(self, key_name, duration=0.05, require_focus=True):
         """Send a hardware key only while FiveM is the foreground window."""
         if require_focus and self.activate_game_window() is None:
             return False
@@ -2312,7 +2312,7 @@ class MacroWorker(QThread):
                 )
             self.activate_game_window()
             time.sleep(0.15)
-            if not self.send_game_key("t", duration=0.20):
+            if not self.send_game_key("t", duration=0.05):
                 continue
             time.sleep(1.0)
             if self.is_inventory_open():
@@ -2346,18 +2346,15 @@ class MacroWorker(QThread):
                     f"{log_prefix} กระเป๋ายังเปิดอยู่ "
                     "กำลังลองกด T ซ้ำครั้งสุดท้าย..."
                 )
-            # FiveM can swallow a short T press when focus changes or the UI is
-            # still animating. Re-focus before every attempt, hold the key a
-            # little longer, then verify two fresh frames.
             if self.activate_game_window() is None:
                 self.log_signal.emit(
                     f"{log_prefix} ยกเลิกการปิดกระเป๋า เพราะโฟกัส FiveM ไม่สำเร็จ"
                 )
                 return False
-            time.sleep(0.4)
-            if not self.send_game_key("t", duration=0.25):
+            time.sleep(0.2)
+            if not self.send_game_key("t", duration=0.05):
                 return False
-            time.sleep(3.0)
+            time.sleep(2.0)
             first_check = self.capture_background(self.hwnd)
             closed_once = (
                 first_check is not None
@@ -3010,7 +3007,7 @@ class MacroWorker(QThread):
             self.activate_game_window()
             time.sleep(0.2)
 
-            self.send_game_key("t", duration=0.20)
+            self.send_game_key("t", duration=0.05)
             time.sleep(0.6)
 
             proof_path = get_writable_path("discord_close_bag_capture.png")
