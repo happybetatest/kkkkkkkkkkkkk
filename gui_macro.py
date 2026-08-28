@@ -2757,38 +2757,67 @@ class MacroWorker(QThread):
             return False
         if not self.send_game_key("x"):
             return False
-        time.sleep(1.0)
-        # The trunk requires H, but FiveM/NUI only receives it reliably when
-        # its client has both keyboard focus and the pointer inside the game.
-        # Do this immediately before H so the key cannot reach another window.
-        if self.activate_game_window() is None:
-            return False
-        geometry = self.get_client_geometry()
-        if not geometry:
-            self.log_signal.emit("[ระบบเก็บเพชร] อ่านพื้นที่ FiveM ไม่ได้ จึงไม่กด H")
-            return False
-        game_x, game_y, game_w, game_h = geometry
-        win32api.SetCursorPos((game_x + game_w // 2, game_y + game_h // 2))
-        time.sleep(0.2)
-        if not self.send_game_key("h", duration=0.15):
-            return False
-        time.sleep(1.3)
+        time.sleep(0.8)
+
         trunk_opened = False
         stored_successfully = False
-        bg_img = self.capture_background(self.hwnd)
-        if bg_img is not None:
-            h_img, w_img, _ = bg_img.shape
-            tr_x, tr_y = self.get_region_ranges(self.trunk_ready_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
-            btn_ready = self.find_image(bg_img, "templates/trunk_ready.png", 0.60, x_range=tr_x, y_range=tr_y)
-            if btn_ready and btn_ready[0] is not None:
-                bx, by, bval = btn_ready
-                screen_x, screen_y = self.client_to_screen(bx, by)
-                self.double_click_at(screen_x, screen_y)
-                trunk_opened = True
-                time.sleep(4.0)
+
+        for trunk_attempt in range(1, 4):
+            if self.activate_game_window() is None:
+                return False
+            geometry = self.get_client_geometry()
+            if not geometry:
+                self.log_signal.emit("[ระบบเก็บเพชร] อ่านพื้นที่ FiveM ไม่ได้ จึงไม่กด H")
+                return False
+            game_x, game_y, game_w, game_h = geometry
+            win32api.SetCursorPos((game_x + game_w // 2, game_y + game_h // 2))
+            time.sleep(0.15)
+
+            if trunk_attempt == 1:
+                self.log_signal.emit("[ระบบเก็บเพชร] กำลังกดปุ่ม H เพื่อเปิดเมนูท้ายรถ...")
+            else:
+                self.log_signal.emit(f"[ระบบเก็บเพชร] ยังไม่พบปุ่มท้ายรถ กำลังลองกด H ซ้ำ (รอบที่ {trunk_attempt}/3)...")
+
+            self.send_game_key("h", duration=0.10)
+
+            # Polling for trunk_ready button over 2.5s to allow radial UI animation to finish
+            poll_start = time.time()
+            while time.time() - poll_start < 2.5:
+                time.sleep(0.3)
+                bg_img = self.capture_background(self.hwnd)
+                if bg_img is None:
+                    continue
+                h_img, w_img, _ = bg_img.shape
+                tr_x, tr_y = self.get_region_ranges(self.trunk_ready_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
+                btn_ready = self.find_image(bg_img, "templates/trunk_ready.png", 0.60, x_range=tr_x, y_range=tr_y)
+                if not btn_ready or btn_ready[0] is None:
+                    btn_ready = self.find_image(bg_img, "templates/trunk_ready.png", 0.52)
+
+                if btn_ready and btn_ready[0] is not None:
+                    bx, by, bval = btn_ready
+                    screen_x, screen_y = self.client_to_screen(bx, by)
+                    self.log_signal.emit(f"[ระบบเก็บเพชร] 🔘 ตรวจพบปุ่มเปิดท้ายรถ (ความแม่นยำ {bval:.2f}) กำลังคลิก...")
+                    win32api.SetCursorPos((screen_x, screen_y))
+                    time.sleep(0.12)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.06)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    time.sleep(0.15)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.06)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    trunk_opened = True
+                    break
+
+            if trunk_opened:
+                time.sleep(3.0)
+                break
+            else:
+                time.sleep(0.4)
+
         if not trunk_opened:
             self.log_signal.emit(
-                "[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ ยกเลิกรอบนี้"
+                "[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ หลังลองครบ 3 ครั้ง ยกเลิกรอบนี้"
             )
             self.ensure_inventory_open("[ระบบเก็บเพชร]")
             if orig_pos:
@@ -2797,6 +2826,7 @@ class MacroWorker(QThread):
                 except Exception:
                     pass
             return False
+
         bg_trunk = self.capture_background(self.hwnd)
         if bg_trunk is not None:
             h_img, w_img, _ = bg_trunk.shape
@@ -2806,6 +2836,9 @@ class MacroWorker(QThread):
             
             dia_x, dia_y = self.get_region_ranges(self.diamond_trunk_search_region, w_img, h_img, default_x, default_y)
             diamond_result = self.find_image(bg_trunk, "templates/diamond_trunk.png", 0.70, x_range=dia_x, y_range=dia_y)
+            if not diamond_result or diamond_result[0] is None:
+                diamond_result = self.find_image(bg_trunk, "templates/diamond_trunk.png", 0.58)
+
             if diamond_result and diamond_result[0] is not None:
                 if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
                     diamond_result = None
@@ -2819,6 +2852,9 @@ class MacroWorker(QThread):
                 if bg_pop is not None:
                     at_x, at_y = self.get_region_ranges(self.all_trunk_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
                     btn_all = self.find_image(bg_pop, "templates/all_trunk.png", 0.60, x_range=at_x, y_range=at_y)
+                    if not btn_all or btn_all[0] is None:
+                        btn_all = self.find_image(bg_pop, "templates/all_trunk.png", 0.52)
+
                     if btn_all and btn_all[0] is not None:
                         ax, ay, aval = btn_all
                         win32api.SetCursorPos(self.client_to_screen(ax, ay))
@@ -2831,6 +2867,9 @@ class MacroWorker(QThread):
                         if bg_confirm is not None:
                             ct_x, ct_y = self.get_region_ranges(self.confirm_trunk_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
                             btn_conf = self.find_image(bg_confirm, "templates/confirm_trunk.png", 0.60, x_range=ct_x, y_range=ct_y)
+                            if not btn_conf or btn_conf[0] is None:
+                                btn_conf = self.find_image(bg_confirm, "templates/confirm_trunk.png", 0.52)
+
                             if btn_conf and btn_conf[0] is not None:
                                 cx, cy, cval = btn_conf
                                 win32api.SetCursorPos(self.client_to_screen(cx, cy))
