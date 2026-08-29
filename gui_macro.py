@@ -1694,6 +1694,16 @@ class MacroWorker(QThread):
         hwnd_list.sort(key=lambda x: x[2], reverse=True)
         return hwnd_list[0][0] if hwnd_list else None
 
+    def get_window_title(self, hwnd=None):
+        target = hwnd or self.hwnd
+        if target and win32gui.IsWindow(target):
+            try:
+                title = win32gui.GetWindowText(target)
+                if title: return title
+            except Exception:
+                pass
+        return "FiveM"
+
     def capture_background(self, hwnd):
         geometry = self.get_client_geometry(hwnd)
         if not geometry:
@@ -2180,6 +2190,9 @@ class MacroWorker(QThread):
         try:
             if not self.hwnd or not win32gui.IsWindow(self.hwnd):
                 return None
+            if win32gui.GetForegroundWindow() == self.hwnd:
+                self.focus_failure_streak = 0
+                return True
             if win32gui.IsIconic(self.hwnd):
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
             
@@ -2191,10 +2204,6 @@ class MacroWorker(QThread):
                 pass
 
             try:
-                win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                                     win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
-                win32gui.SetWindowPos(self.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                                     win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
                 ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
                 win32gui.BringWindowToTop(self.hwnd)
                 win32gui.SetForegroundWindow(self.hwnd)
@@ -2406,7 +2415,7 @@ class MacroWorker(QThread):
         if not self.is_inventory_open(initial_bg):
             self.log_signal.emit(f"{log_prefix} กระเป๋าปิดอยู่แล้ว")
             return True
-        for attempt in range(1, 3):
+        for attempt in range(1, 4):
             if attempt == 1:
                 self.log_signal.emit(
                     f"{log_prefix} พบว่ากระเป๋าเปิดอยู่ "
@@ -2415,7 +2424,7 @@ class MacroWorker(QThread):
             else:
                 self.log_signal.emit(
                     f"{log_prefix} กระเป๋ายังเปิดอยู่ "
-                    "กำลังลองกด T ซ้ำครั้งสุดท้าย..."
+                    f"กำลังลองปิดซ้ำ (รอบที่ {attempt}/3)..."
                 )
             if not self.activate_game_window():
                 self.log_signal.emit(
@@ -2424,16 +2433,17 @@ class MacroWorker(QThread):
                 return False
             time.sleep(0.15)
 
+            # ลองกด T
             if not self.send_game_key("t", duration=0.10):
                 return False
-            time.sleep(1.5)
+            time.sleep(1.2)
             first_check = self.capture_background(self.hwnd)
             closed_once = (
                 first_check is not None
                 and not self.is_inventory_open(first_check)
             )
             if closed_once:
-                time.sleep(0.6)
+                time.sleep(0.5)
                 second_check = self.capture_background(self.hwnd)
                 if (
                     second_check is not None
@@ -2443,14 +2453,26 @@ class MacroWorker(QThread):
                         f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ"
                     )
                     return True
-            if attempt < 2:
+
+            # หากกด T แล้วยังไม่ปิด และตรวจภาพยืนยันว่ากระเป๋า NUI ยังเปิดอยู่ ให้ส่ง ESC เพื่อปิด NUI อย่างปลอดภัย
+            check_open = self.capture_background(self.hwnd)
+            if check_open is not None and self.is_inventory_open(check_open):
+                self.log_signal.emit(f"{log_prefix} กระเป๋ายังไม่ปิด กำลังส่ง ESC เพื่อปิดหน้าต่าง...")
+                self.send_game_key("esc", duration=0.08)
+                time.sleep(1.2)
+                check_esc = self.capture_background(self.hwnd)
+                if check_esc is not None and not self.is_inventory_open(check_esc):
+                    self.log_signal.emit(f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ (ด้วย ESC)")
+                    return True
+
+            if attempt < 3:
                 time.sleep(0.5)
         self.log_signal.emit(
-            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 2 ครั้ง"
+            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 3 ครั้ง"
         )
         self.send_bug_webhook(
             "ปิดกระเป๋าไม่สำเร็จ",
-            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 2 ครั้ง",
+            f"{log_prefix} ลองปิดกระเป๋าแล้ว 3 ครั้ง",
             alert_key="inventory_close_failed",
         )
         try:
