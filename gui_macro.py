@@ -2507,17 +2507,24 @@ class MacroWorker(QThread):
         except Exception: pass
 
     def execute_feeding_sequence(self, need_food, need_water):
-        self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
         self.is_executing_task = True
+        self.gold_disposal_stage = None
+        self.log_signal.emit(f"[ระบบป้อนอาหาร] 🎯 เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food}) - ระงับกระบวนการอื่นทั้งหมด")
         orig_pos = None
         try:
             try:
                 orig_pos = win32api.GetCursorPos()
             except Exception:
                 pass
+            # ดึงโฟกัสหน้าต่าง FiveM ก่อน 2 วินาทีตามคำสั่ง
+            self.log_signal.emit("[ระบบป้อนอาหาร] ⏳ กำลังดึงโฟกัสเกม FiveM และรอ 2 วินาที...")
             if not self.activate_game_window():
                 self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
                 return False
+            time.sleep(2.0)
+            if not self.activate_game_window():
+                return False
+
             # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
             if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
                 self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
@@ -2567,6 +2574,7 @@ class MacroWorker(QThread):
             return True
         finally:
             self.is_executing_task = False
+            self.gold_disposal_stage = None
             self.character_idle_since = 0.0
             self.last_activity_sample_time = time.time() + 15.0
 
@@ -2675,20 +2683,28 @@ class MacroWorker(QThread):
             return False
 
     def execute_store_diamonds_sequence(self):
-        self.log_signal.emit("[ระบบเก็บเพชร] เริ่มกระบวนการเก็บเพชรลงรถ...")
+        self.is_executing_task = True
         self.is_storing_diamonds = True
+        self.gold_disposal_stage = None
+        self.log_signal.emit("[ระบบเก็บเพชร] 🎯 เริ่มกระบวนการเก็บเพชรลงรถ - ระงับกระบวนการอื่นทั้งหมด")
         orig_pos = None
         try:
             try:
                 orig_pos = win32api.GetCursorPos()
             except Exception:
                 pass
+            # ดึงโฟกัสหน้าต่าง FiveM ก่อน 2 วินาทีตามคำสั่ง
+            self.log_signal.emit("[ระบบเก็บเพชร] ⏳ กำลังดึงโฟกัสเกม FiveM และรอ 2 วินาที...")
             if not self.activate_game_window():
                 self.log_signal.emit(
                     "[ระบบเก็บเพชร] ยกเลิกรอบเก็บ "
                     "เพราะ FiveM ไม่ได้อยู่ด้านหน้า"
                 )
                 return False
+            time.sleep(2.0)
+            if not self.activate_game_window():
+                return False
+
             if not self.ensure_inventory_closed("[ระบบเก็บเพชร]"):
                 self.log_signal.emit(
                     "[ระบบเก็บเพชร] ยกเลิกรอบ "
@@ -2936,6 +2952,7 @@ class MacroWorker(QThread):
         finally:
             self.is_storing_diamonds = False
             self.is_executing_task = False
+            self.gold_disposal_stage = None
             self.character_idle_since = 0.0
             self.last_activity_sample_time = time.time() + 15.0
 
