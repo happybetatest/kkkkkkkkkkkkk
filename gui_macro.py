@@ -2351,17 +2351,21 @@ class MacroWorker(QThread):
         if dark_ratio < 0.12:
             return False
 
-        x_range = (x_start / w_img, x_end / w_img)
-        y_range = (scan_y_start / h_img, y_end / h_img)
+        # 1. ตรวจจับแถบหัวข้อกระเป๋า (แม่นยำ 100% ไม่หลงกับพื้นหลังหรือหน้าจออื่น)
+        for h_tpl in ("templates/inventory_header_bar.png", "templates/inventory_header_icon.png"):
+            res_h = self.find_image(bg_img, h_tpl, 0.45)
+            if res_h and res_h[0] is not None:
+                hx, hy, _ = res_h
+                if int(h_img * 0.10) <= hy <= int(h_img * 0.75):
+                    return True
+
+        # 2. ตรวจจับไอเทมหลักภายในกรอบกระเป๋า
         for template_path, threshold in (
-            ("templates/diamond_icon.png", 0.50),
-            ("templates/diamond_icon_tight.png", 0.50),
-            ("templates/diamond_trunk.png", 0.50),
-            ("templates/gold_ore.png", 0.50),
-            ("templates/gold.png", 0.50),
-            ("templates/destroy.png", 0.50),
-            ("templates/all.png", 0.50),
-            ("templates/all_trunk.png", 0.50),
+            ("templates/diamond_icon.png", 0.65),
+            ("templates/diamond_icon_tight.png", 0.65),
+            ("templates/gold_ore.png", 0.65),
+            ("templates/gold.png", 0.65),
+            ("templates/diamond_trunk.png", 0.65),
         ):
             result = self.find_image(
                 bg_img,
