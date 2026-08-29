@@ -2789,7 +2789,7 @@ class MacroWorker(QThread):
             else:
                 self.log_signal.emit(f"[ระบบเก็บเพชร] ยังไม่พบปุ่มท้ายรถ กำลังลองกด H ซ้ำ (รอบที่ {trunk_attempt}/3)...")
 
-            self.send_game_key("h", duration=0.10)
+            self.send_game_key("h", duration=0.15)
 
             # Polling for trunk_ready button over 2.5s to allow radial UI animation to finish
             poll_start = time.time()
@@ -2809,15 +2809,25 @@ class MacroWorker(QThread):
                     screen_x, screen_y = self.client_to_screen(bx, by)
                     self.log_signal.emit(f"[ระบบเก็บเพชร] 🔘 ตรวจพบปุ่มเปิดท้ายรถ (ความแม่นยำ {bval:.2f}) กำลังคลิกเปิด...")
                     win32api.SetCursorPos((screen_x, screen_y))
-                    time.sleep(0.12)
+                    time.sleep(0.15)
+                    # ส่งสัญญาณคลิกทั้งระดับ OS และระดับ Message ไปยังหน้าต่างเกม
+                    lParam = win32api.MAKELONG(bx, by)
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                    time.sleep(0.06)
+                    try:
+                        win32gui.SendMessage(self.hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam)
+                    except Exception:
+                        pass
+                    time.sleep(0.08)
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    try:
+                        win32gui.SendMessage(self.hwnd, win32con.WM_LBUTTONUP, 0, lParam)
+                    except Exception:
+                        pass
                     trunk_opened = True
                     break
 
             if trunk_opened:
-                time.sleep(2.5)
+                time.sleep(2.0)
                 break
             else:
                 time.sleep(0.4)
@@ -2840,7 +2850,8 @@ class MacroWorker(QThread):
         self.log_signal.emit("[ระบบเก็บเพชร] 🔍 กำลังรอหน้าต่างท้ายรถและค้นหาเพชร...")
         
         trunk_poll_start = time.time()
-        while time.time() - trunk_poll_start < 5.5:
+        t_fallback_attempted = False
+        while time.time() - trunk_poll_start < 6.0:
             time.sleep(0.4)
             bg_trunk = self.capture_background(self.hwnd)
             if bg_trunk is None:
@@ -2870,6 +2881,11 @@ class MacroWorker(QThread):
                         break
             if diamond_found:
                 break
+            # หากรอมา 2.5 วินาทีแล้วยังไม่พบหน้ากระเป๋าเพชร ให้ลองกด T หนึ่งครั้งเพื่อเปิดหน้าต่างเก็บของ
+            if not t_fallback_attempted and (time.time() - trunk_poll_start) > 2.5:
+                t_fallback_attempted = True
+                self.send_game_key("t", duration=0.05)
+                time.sleep(0.5)
 
         if diamond_found and diamond_result and diamond_result[0] is not None:
             dx, dy, dval = diamond_result
@@ -2945,17 +2961,14 @@ class MacroWorker(QThread):
             )
         if trunk_opened:
             self.ensure_inventory_closed("[ระบบเก็บเพชร]")
-            time.sleep(0.4)
-            self.send_game_key("esc")
-            time.sleep(0.4)
-            self.ensure_not_in_pause_menu()
-        self.ensure_not_in_pause_menu()
+            time.sleep(0.5)
+
         if not self.hold_game_key("e", 1.5):
             return False
         time.sleep(1.5)
         bg_final = self.capture_background(self.hwnd)
         if bg_final is not None:
-            # [แก้ไข] ค้นหาปุ่มเริ่มงานทั่วหน้าจอ ป้องกันตั้งพิกัดคลาดเคลื่อน
+            # ค้นหาปุ่มเริ่มงานทั่วหน้าจอ ป้องกันตั้งพิกัดคลาดเคลื่อน
             btn_result = self.find_image(bg_final, "templates/auto_farm.png", 0.70)
             if btn_result and btn_result[0] is not None:
                 bx, by, _ = btn_result
