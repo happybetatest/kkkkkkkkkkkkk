@@ -2510,8 +2510,12 @@ class MacroWorker(QThread):
 
     def execute_feeding_sequence(self, need_food, need_water):
         self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
-        orig_pos = self.activate_game_window()
-        if orig_pos is None:
+        orig_pos = None
+        try:
+            orig_pos = win32api.GetCursorPos()
+        except Exception:
+            pass
+        if not self.activate_game_window():
             self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
             return False
         # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
@@ -2520,20 +2524,22 @@ class MacroWorker(QThread):
             return False
         self.safe_sleep(0.5)
         if not self.is_running or self.is_exiting: return False
-        if not self.send_game_key("x"):
+        if not self.send_game_key("x", duration=0.15):
             return False
-        self.safe_sleep(0.8)
+        self.safe_sleep(1.0)
         if not self.is_running or self.is_exiting: return False
         if need_water:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
-            if not self.send_game_key("6"):
-                return False
+            self.send_game_key("6", duration=0.15)
+            self.safe_sleep(0.3)
+            self.send_game_key("6", duration=0.15)
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
         if need_food:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
-            if not self.send_game_key("7"):
-                return False
+            self.send_game_key("7", duration=0.15)
+            self.safe_sleep(0.3)
+            self.send_game_key("7", duration=0.15)
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
         self.ensure_not_in_pause_menu()
@@ -2562,7 +2568,7 @@ class MacroWorker(QThread):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 self.safe_sleep(2.0)
         self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-        if not self.send_game_key("t"):
+        if not self.send_game_key("t", duration=0.12):
             return False
         self.safe_sleep(1.0)
         if orig_pos:
@@ -2607,7 +2613,8 @@ class MacroWorker(QThread):
             if now - self.last_feeding_attempt_time < 60.0:
                 return
             self.last_feeding_attempt_time = now
-            self.execute_feeding_sequence(need_food, need_water)
+            # หากตัวใดตัวหนึ่งต่ำ ให้ทำการกินทั้งคู่เพื่อเติมหลอดให้เต็ม
+            self.execute_feeding_sequence(need_food=True, need_water=True)
 
     def double_click_at(self, abs_x, abs_y):
         try:
