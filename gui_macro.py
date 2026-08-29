@@ -2351,6 +2351,9 @@ class MacroWorker(QThread):
         if dark_ratio < 0.12:
             return False
 
+        x_range = (x_start / w_img, x_end / w_img)
+        y_range = (scan_y_start / h_img, y_end / h_img)
+
         # 1. ตรวจจับแถบหัวข้อกระเป๋า (แม่นยำ 100% ไม่หลงกับพื้นหลังหรือหน้าจออื่น)
         for h_tpl in ("templates/inventory_header_bar.png", "templates/inventory_header_icon.png"):
             res_h = self.find_image(bg_img, h_tpl, 0.45)
