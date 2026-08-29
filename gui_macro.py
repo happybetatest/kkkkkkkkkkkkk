@@ -2178,82 +2178,17 @@ class MacroWorker(QThread):
     def activate_game_window(self):
         try:
             if not self.hwnd or not win32gui.IsWindow(self.hwnd):
-                self.log_signal.emit("[ระบบ] ไม่พบหน้าต่าง FiveM สำหรับรับโฟกัส")
-                self.record_focus_failure("ไม่พบหน้าต่าง FiveM สำหรับรับโฟกัส")
                 return None
             if win32gui.IsIconic(self.hwnd):
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-                time.sleep(0.3)
-            geometry = self.get_client_geometry()
-            if not geometry:
-                self.log_signal.emit("[ระบบ] อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้")
-                self.record_focus_failure("อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้ 3 ครั้งติด")
-                return None
-            orig_pos = win32api.GetCursorPos()
             
-            # ปลดล็อคระบบความปลอดภัยของ Windows (Foreground Lock) ด้วยการจำลองปุ่ม ALT
-            try:
-                ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
-                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
-            except Exception:
-                pass
-            
-            # บังคับดึงหน้าต่างขึ้นมาด้านหน้าสุด (Force Bring to Top)
-            try:
-                win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
-                win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, 
-                                     win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
-                win32gui.SetWindowPos(self.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, 
-                                     win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
-                ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
-                win32gui.BringWindowToTop(self.hwnd)
+            fg = win32gui.GetForegroundWindow()
+            if fg != self.hwnd:
                 win32gui.SetForegroundWindow(self.hwnd)
-            except Exception:
-                pass
-
-            attached = False
-            try:
-                foreground = win32gui.GetForegroundWindow()
-                foreground_thread = win32process.GetWindowThreadProcessId(
-                    foreground
-                )[0] if foreground else 0
-                current_thread = win32api.GetCurrentThreadId()
-                if foreground_thread and foreground_thread != current_thread:
-                    attached = bool(
-                        ctypes.windll.user32.AttachThreadInput(
-                            current_thread, foreground_thread, True
-                        )
-                    )
-                ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
-                win32gui.BringWindowToTop(self.hwnd)
-                win32gui.SetForegroundWindow(self.hwnd)
-            except Exception:
-                pass
-            finally:
-                if attached:
-                    try:
-                        ctypes.windll.user32.AttachThreadInput(
-                            current_thread, foreground_thread, False
-                        )
-                    except Exception:
-                        pass
-            time.sleep(0.2)
-            current_fg = win32gui.GetForegroundWindow()
-            if current_fg != self.hwnd and win32gui.GetAncestor(current_fg, win32con.GA_ROOT) != self.hwnd:
-                # หาก Windows ยังไม่ยอมให้สิทธิ์ ให้จำลองคลิกกลางจอ FiveM เพื่อดึงโฟกัส 100%
-                game_x, game_y, game_w, game_h = geometry
-                cx, cy = game_x + game_w // 2, game_y + game_h // 2
-                win32api.SetCursorPos((cx, cy))
-                time.sleep(0.05)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.05)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(0.15)
+                time.sleep(0.2)
             self.focus_failure_streak = 0
-            return orig_pos
-        except Exception as error:
-            self.log_signal.emit(f"[ระบบ] โฟกัส FiveM ไม่สำเร็จ: {error}")
-            self.record_focus_failure("โฟกัส FiveM เกิดข้อผิดพลาด 3 ครั้งติด")
+            return True
+        except Exception:
             return None
 
     def send_game_key(self, key_name, duration=0.05, require_focus=True):
@@ -2288,7 +2223,6 @@ class MacroWorker(QThread):
             self.character_idle_since = 0.0
             return False
         now = time.time()
-        # If inventory is currently open on screen, the character is normally static (mining)
         if self.is_inventory_open(bg_img):
             self.character_idle_since = now
             self.last_activity_frame = None
@@ -2318,17 +2252,6 @@ class MacroWorker(QThread):
         if not self.ensure_inventory_open("[ระบบทอง]"):
             self.idle_fail_streak += 1
             if self.idle_fail_streak >= 2:
-                self.log_signal.emit(
-                    "[ระบบทอง] ⚠️ ตรวจพบตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ กำลังพยายามกู้คืนระบบฟาร์ม (กด E เริ่มงานใหม่)..."
-                )
-                self.send_bug_webhook(
-                    "ตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ",
-                    "ตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ ระบบกำลังพยายามกด E เริ่มงานใหม่อัตโนมัติ",
-                    alert_key="idle_inventory_open_failed",
-                    cooldown_seconds=120.0
-                )
-                # Auto-recovery: Close any stuck window and resume farming
-                self.ensure_inventory_closed("[ระบบทอง]")
                 time.sleep(0.5)
                 self.resume_farming_after_inventory()
                 self.idle_fail_streak = 0
@@ -2753,8 +2676,12 @@ class MacroWorker(QThread):
 
     def execute_store_diamonds_sequence(self):
         self.log_signal.emit("[ระบบเก็บเพชร] เริ่มกระบวนการเก็บเพชรลงรถ...")
-        orig_pos = self.activate_game_window()
-        if orig_pos is None:
+        orig_pos = None
+        try:
+            orig_pos = win32api.GetCursorPos()
+        except Exception:
+            pass
+        if not self.activate_game_window():
             self.log_signal.emit(
                 "[ระบบเก็บเพชร] ยกเลิกรอบเก็บ "
                 "เพราะ FiveM ไม่ได้อยู่ด้านหน้า"
