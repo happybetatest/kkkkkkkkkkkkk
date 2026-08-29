@@ -2381,11 +2381,18 @@ class MacroWorker(QThread):
             x_start, x_end = int(w_img * 0.25), int(w_img * 0.90)
             y_start, y_end = int(h_img * 0.24), int(h_img * 0.95)
 
-        # Strictly exclude top-right Quest HUD (x > 0.65, y < 0.24) which displays quest gold/diamond icons
-        scan_y_start = max(y_start, int(h_img * 0.24))
+        scan_y_start = max(y_start, int(h_img * 0.20))
         if x_end - x_start < 20 or y_end - scan_y_start < 20:
             return False
 
+        # 1. ตรวจจับแถบหัวข้อของหน้าต่างกระเป๋า (ความแม่นยำสูง 100%)
+        res_bar = self.find_image(bg_img, "templates/inventory_bar.png", 0.55)
+        if res_bar and res_bar[0] is not None:
+            bx, by, _ = res_bar
+            if int(h_img * 0.15) <= by <= int(h_img * 0.80):
+                return True
+
+        # 2. ตรวจจับพื้นที่กล่องสีมืดของกระเป๋า
         bag_crop = bg_img[scan_y_start:y_end, x_start:x_end]
         bag_gray = cv2.cvtColor(bag_crop, cv2.COLOR_BGR2GRAY)
         dark_mask = cv2.inRange(bag_gray, 0, 88)
@@ -2396,12 +2403,13 @@ class MacroWorker(QThread):
         x_range = (x_start / w_img, x_end / w_img)
         y_range = (scan_y_start / h_img, y_end / h_img)
         for template_path, threshold in (
-            ("templates/all.png", 0.58),
-            ("templates/destroy.png", 0.58),
-            ("templates/gold_ore.png", 0.65),
-            ("templates/diamond_icon.png", 0.68),
-            ("templates/gold.png", 0.65),
-            ("templates/diamond_trunk.png", 0.65),
+            ("templates/diamond_icon.png", 0.55),
+            ("templates/diamond_icon_tight.png", 0.55),
+            ("templates/gold_ore.png", 0.55),
+            ("templates/gold.png", 0.55),
+            ("templates/diamond_trunk.png", 0.55),
+            ("templates/destroy.png", 0.55),
+            ("templates/all.png", 0.55),
         ):
             result = self.find_image(
                 bg_img,
@@ -2412,7 +2420,6 @@ class MacroWorker(QThread):
             )
             if result and result[0] is not None:
                 mx, my, _ = result
-                # Exclude any match that falls into the quest HUD box
                 if my < int(h_img * 0.24) and mx > int(w_img * 0.65):
                     continue
                 return True
