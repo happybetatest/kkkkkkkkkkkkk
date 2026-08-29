@@ -2424,7 +2424,7 @@ class MacroWorker(QThread):
             else:
                 self.log_signal.emit(
                     f"{log_prefix} กระเป๋ายังเปิดอยู่ "
-                    f"กำลังลองปิดซ้ำ (รอบที่ {attempt}/3)..."
+                    f"กำลังลองกด T ซ้ำ (รอบที่ {attempt}/3)..."
                 )
             if not self.activate_game_window():
                 self.log_signal.emit(
@@ -2433,8 +2433,8 @@ class MacroWorker(QThread):
                 return False
             time.sleep(0.15)
 
-            # ลองกด T
-            if not self.send_game_key("t", duration=0.10):
+            # ส่งปุ่ม T ปิดกระเป๋า (ห้ามส่ง ESC เด็ดขาดเพื่อไม่ให้เข้าหน้า Pause Menu/Rockstar)
+            if not self.send_game_key("t", duration=0.12):
                 return False
             time.sleep(1.2)
             first_check = self.capture_background(self.hwnd)
@@ -2454,17 +2454,6 @@ class MacroWorker(QThread):
                     )
                     return True
 
-            # หากกด T แล้วยังไม่ปิด และตรวจภาพยืนยันว่ากระเป๋า NUI ยังเปิดอยู่ ให้ส่ง ESC เพื่อปิด NUI อย่างปลอดภัย
-            check_open = self.capture_background(self.hwnd)
-            if check_open is not None and self.is_inventory_open(check_open):
-                self.log_signal.emit(f"{log_prefix} กระเป๋ายังไม่ปิด กำลังส่ง ESC เพื่อปิดหน้าต่าง...")
-                self.send_game_key("esc", duration=0.08)
-                time.sleep(1.2)
-                check_esc = self.capture_background(self.hwnd)
-                if check_esc is not None and not self.is_inventory_open(check_esc):
-                    self.log_signal.emit(f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ (ด้วย ESC)")
-                    return True
-
             if attempt < 3:
                 time.sleep(0.5)
         self.log_signal.emit(
@@ -2472,7 +2461,7 @@ class MacroWorker(QThread):
         )
         self.send_bug_webhook(
             "ปิดกระเป๋าไม่สำเร็จ",
-            f"{log_prefix} ลองปิดกระเป๋าแล้ว 3 ครั้ง",
+            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 3 ครั้ง",
             alert_key="inventory_close_failed",
         )
         try:
