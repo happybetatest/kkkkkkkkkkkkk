@@ -2192,6 +2192,9 @@ class MacroWorker(QThread):
             orig_pos = win32api.GetCursorPos()
             focus_error = None
             try:
+                # ส่งปุ่ม ALT สั้นๆ เพื่อบายพาสระบบล็อค Foreground ของ Windows 10/11
+                ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
                 ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
                 win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
                 win32gui.BringWindowToTop(self.hwnd)
@@ -2211,6 +2214,8 @@ class MacroWorker(QThread):
                                 current_thread, foreground_thread, True
                             )
                         )
+                    ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+                    ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
                     ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
                     win32gui.BringWindowToTop(self.hwnd)
                     win32gui.SetForegroundWindow(self.hwnd)
@@ -2465,7 +2470,7 @@ class MacroWorker(QThread):
         if not self.is_inventory_open(initial_bg):
             self.log_signal.emit(f"{log_prefix} กระเป๋าปิดอยู่แล้ว")
             return True
-        for attempt in range(1, 3):
+        for attempt in range(1, 4):
             if attempt == 1:
                 self.log_signal.emit(
                     f"{log_prefix} พบว่ากระเป๋าเปิดอยู่ "
@@ -2474,24 +2479,21 @@ class MacroWorker(QThread):
             else:
                 self.log_signal.emit(
                     f"{log_prefix} กระเป๋ายังเปิดอยู่ "
-                    "กำลังลองกด T ซ้ำครั้งสุดท้าย..."
+                    f"กำลังลองกด T ซ้ำ (รอบที่ {attempt}/3)..."
                 )
-            if self.activate_game_window() is None:
-                self.log_signal.emit(
-                    f"{log_prefix} ยกเลิกการปิดกระเป๋า เพราะโฟกัส FiveM ไม่สำเร็จ"
-                )
+            self.activate_game_window()
+            time.sleep(0.15)
+            # กดปุ่ม T ด้วยระยะเวลา 0.15 วินาที เพื่อให้เกมรับคำสั่ง 100%
+            if not self.send_game_key("t", duration=0.15):
                 return False
-            time.sleep(0.2)
-            if not self.send_game_key("t", duration=0.05):
-                return False
-            time.sleep(2.0)
+            time.sleep(1.2)
             first_check = self.capture_background(self.hwnd)
             closed_once = (
                 first_check is not None
                 and not self.is_inventory_open(first_check)
             )
             if closed_once:
-                time.sleep(0.6)
+                time.sleep(0.4)
                 second_check = self.capture_background(self.hwnd)
                 if (
                     second_check is not None
@@ -2501,14 +2503,14 @@ class MacroWorker(QThread):
                         f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ"
                     )
                     return True
-            if attempt < 2:
-                time.sleep(0.5)
+            if attempt < 3:
+                time.sleep(0.4)
         self.log_signal.emit(
-            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 2 ครั้ง"
+            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 3 ครั้ง"
         )
         self.send_bug_webhook(
             "ปิดกระเป๋าไม่สำเร็จ",
-            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 2 ครั้ง",
+            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 3 ครั้ง",
             alert_key="inventory_close_failed",
         )
         try:
