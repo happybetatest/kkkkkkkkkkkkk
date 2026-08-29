@@ -1368,7 +1368,6 @@ class MacroWorker(QThread):
         self.idle_fail_streak = 0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
-        self.is_executing_task = False
         self.last_rockstar_escape_time = 0.0
         self.discord_bug_alert_times = {}
 
@@ -1693,16 +1692,6 @@ class MacroWorker(QThread):
         win32gui.EnumWindows(callback, None)
         hwnd_list.sort(key=lambda x: x[2], reverse=True)
         return hwnd_list[0][0] if hwnd_list else None
-
-    def get_window_title(self, hwnd=None):
-        target = hwnd or self.hwnd
-        if target and win32gui.IsWindow(target):
-            try:
-                title = win32gui.GetWindowText(target)
-                if title: return title
-            except Exception:
-                pass
-        return "FiveM"
 
     def capture_background(self, hwnd):
         geometry = self.get_client_geometry(hwnd)
@@ -2189,34 +2178,74 @@ class MacroWorker(QThread):
     def activate_game_window(self):
         try:
             if not self.hwnd or not win32gui.IsWindow(self.hwnd):
+                self.log_signal.emit("[ระบบ] ไม่พบหน้าต่าง FiveM สำหรับรับโฟกัส")
+                self.record_focus_failure("ไม่พบหน้าต่าง FiveM สำหรับรับโฟกัส")
                 return None
-            if win32gui.GetForegroundWindow() == self.hwnd:
-                self.focus_failure_streak = 0
-                return True
             if win32gui.IsIconic(self.hwnd):
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-            
-            # ปลดล็อคสิทธิ์ Foreground ด้วย ALT bypass
-            try:
-                ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
-                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
-            except Exception:
-                pass
-
+                time.sleep(0.4)
+            geometry = self.get_client_geometry()
+            if not geometry:
+                self.log_signal.emit("[ระบบ] อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้")
+                self.record_focus_failure("อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้ 3 ครั้งติด")
+                return None
+            orig_pos = win32api.GetCursorPos()
+            focus_error = None
             try:
                 ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
+                win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
                 win32gui.BringWindowToTop(self.hwnd)
                 win32gui.SetForegroundWindow(self.hwnd)
-            except Exception:
-                pass
-
-            time.sleep(0.15)
+            except Exception as error:
+                focus_error = error
+                attached = False
+                try:
+                    foreground = win32gui.GetForegroundWindow()
+                    foreground_thread = win32process.GetWindowThreadProcessId(
+                        foreground
+                    )[0] if foreground else 0
+                    current_thread = win32api.GetCurrentThreadId()
+                    if foreground_thread and foreground_thread != current_thread:
+                        attached = bool(
+                            ctypes.windll.user32.AttachThreadInput(
+                                current_thread, foreground_thread, True
+                            )
+                        )
+                    ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
+                    win32gui.BringWindowToTop(self.hwnd)
+                    win32gui.SetForegroundWindow(self.hwnd)
+                except Exception as retry_error:
+                    focus_error = retry_error
+                finally:
+                    if attached:
+                        try:
+                            ctypes.windll.user32.AttachThreadInput(
+                                current_thread, foreground_thread, False
+                            )
+                        except Exception:
+                            pass
+            time.sleep(0.3)
+            current_fg = win32gui.GetForegroundWindow()
+            if current_fg != self.hwnd and win32gui.GetAncestor(current_fg, win32con.GA_ROOT) != self.hwnd:
+                detail = f": {focus_error}" if focus_error else ""
+                self.log_signal.emit(
+                    "[ระบบ] ไม่สามารถโฟกัส FiveM ได้"
+                    f"{detail} ยกเลิกรอบนี้เพื่อไม่ให้ส่งปุ่มผิดหน้าต่าง"
+                )
+                try:
+                    win32api.SetCursorPos(orig_pos)
+                except Exception:
+                    pass
+                self.record_focus_failure("โฟกัส FiveM ไม่สำเร็จ 3 ครั้งติด")
+                return None
             self.focus_failure_streak = 0
-            return True
-        except Exception:
-            return True
+            return orig_pos
+        except Exception as error:
+            self.log_signal.emit(f"[ระบบ] โฟกัส FiveM ไม่สำเร็จ: {error}")
+            self.record_focus_failure("โฟกัส FiveM เกิดข้อผิดพลาด 3 ครั้งติด")
+            return None
 
-    def send_game_key(self, key_name, duration=0.10, require_focus=True):
+    def send_game_key(self, key_name, duration=0.05, require_focus=True):
         """Send a hardware key only while FiveM is the foreground window."""
         if require_focus and self.activate_game_window() is None:
             return False
@@ -2243,11 +2272,12 @@ class MacroWorker(QThread):
 
     def update_character_idle_state(self, bg_img):
         """Open the inventory after a genuinely static gameplay interval."""
-        if getattr(self, "is_executing_task", False) or getattr(self, "is_storing_diamonds", False) or self.gold_disposal_stage or self.is_inventory_open(bg_img):
+        if self.is_inventory_open(bg_img) or self.gold_disposal_stage:
             self.last_activity_frame = None
             self.character_idle_since = 0.0
             return False
         now = time.time()
+        # If inventory is currently open on screen, the character is normally static (mining)
         if self.is_inventory_open(bg_img):
             self.character_idle_since = now
             self.last_activity_frame = None
@@ -2277,6 +2307,17 @@ class MacroWorker(QThread):
         if not self.ensure_inventory_open("[ระบบทอง]"):
             self.idle_fail_streak += 1
             if self.idle_fail_streak >= 2:
+                self.log_signal.emit(
+                    "[ระบบทอง] ⚠️ ตรวจพบตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ กำลังพยายามกู้คืนระบบฟาร์ม (กด E เริ่มงานใหม่)..."
+                )
+                self.send_bug_webhook(
+                    "ตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ",
+                    "ตัวละครยืนนิ่งและเปิดกระเป๋าไม่สำเร็จ ระบบกำลังพยายามกด E เริ่มงานใหม่อัตโนมัติ",
+                    alert_key="idle_inventory_open_failed",
+                    cooldown_seconds=120.0
+                )
+                # Auto-recovery: Close any stuck window and resume farming
+                self.ensure_inventory_closed("[ระบบทอง]")
                 time.sleep(0.5)
                 self.resume_farming_after_inventory()
                 self.idle_fail_streak = 0
@@ -2340,6 +2381,7 @@ class MacroWorker(QThread):
             x_start, x_end = int(w_img * 0.25), int(w_img * 0.90)
             y_start, y_end = int(h_img * 0.24), int(h_img * 0.95)
 
+        # Strictly exclude top-right Quest HUD (x > 0.65, y < 0.24) which displays quest gold/diamond icons
         scan_y_start = max(y_start, int(h_img * 0.24))
         if x_end - x_start < 20 or y_end - scan_y_start < 20:
             return False
@@ -2353,20 +2395,11 @@ class MacroWorker(QThread):
 
         x_range = (x_start / w_img, x_end / w_img)
         y_range = (scan_y_start / h_img, y_end / h_img)
-
-        # 1. ตรวจจับแถบหัวข้อกระเป๋า (แม่นยำ 100% ไม่หลงกับพื้นหลังหรือหน้าจออื่น)
-        for h_tpl in ("templates/inventory_header_bar.png", "templates/inventory_header_icon.png"):
-            res_h = self.find_image(bg_img, h_tpl, 0.45)
-            if res_h and res_h[0] is not None:
-                hx, hy, _ = res_h
-                if int(h_img * 0.10) <= hy <= int(h_img * 0.75):
-                    return True
-
-        # 2. ตรวจจับไอเทมหลักภายในกรอบกระเป๋า
         for template_path, threshold in (
-            ("templates/diamond_icon.png", 0.65),
-            ("templates/diamond_icon_tight.png", 0.65),
+            ("templates/all.png", 0.58),
+            ("templates/destroy.png", 0.58),
             ("templates/gold_ore.png", 0.65),
+            ("templates/diamond_icon.png", 0.68),
             ("templates/gold.png", 0.65),
             ("templates/diamond_trunk.png", 0.65),
         ):
@@ -2379,6 +2412,7 @@ class MacroWorker(QThread):
             )
             if result and result[0] is not None:
                 mx, my, _ = result
+                # Exclude any match that falls into the quest HUD box
                 if my < int(h_img * 0.24) and mx > int(w_img * 0.65):
                     continue
                 return True
@@ -2401,7 +2435,7 @@ class MacroWorker(QThread):
                 )
             self.activate_game_window()
             time.sleep(0.15)
-            if not self.send_game_key("t", duration=0.10):
+            if not self.send_game_key("t", duration=0.05):
                 continue
             time.sleep(1.0)
             if self.is_inventory_open():
@@ -2424,7 +2458,7 @@ class MacroWorker(QThread):
         if not self.is_inventory_open(initial_bg):
             self.log_signal.emit(f"{log_prefix} กระเป๋าปิดอยู่แล้ว")
             return True
-        for attempt in range(1, 4):
+        for attempt in range(1, 3):
             if attempt == 1:
                 self.log_signal.emit(
                     f"{log_prefix} พบว่ากระเป๋าเปิดอยู่ "
@@ -2433,26 +2467,24 @@ class MacroWorker(QThread):
             else:
                 self.log_signal.emit(
                     f"{log_prefix} กระเป๋ายังเปิดอยู่ "
-                    f"กำลังลองกด T ซ้ำ (รอบที่ {attempt}/3)..."
+                    "กำลังลองกด T ซ้ำครั้งสุดท้าย..."
                 )
-            if not self.activate_game_window():
+            if self.activate_game_window() is None:
                 self.log_signal.emit(
                     f"{log_prefix} ยกเลิกการปิดกระเป๋า เพราะโฟกัส FiveM ไม่สำเร็จ"
                 )
                 return False
-            time.sleep(0.15)
-
-            # ส่งปุ่ม T ปิดกระเป๋า (ห้ามส่ง ESC เด็ดขาดเพื่อไม่ให้เข้าหน้า Pause Menu/Rockstar)
-            if not self.send_game_key("t", duration=0.12):
+            time.sleep(0.2)
+            if not self.send_game_key("t", duration=0.05):
                 return False
-            time.sleep(1.2)
+            time.sleep(2.0)
             first_check = self.capture_background(self.hwnd)
             closed_once = (
                 first_check is not None
                 and not self.is_inventory_open(first_check)
             )
             if closed_once:
-                time.sleep(0.5)
+                time.sleep(0.6)
                 second_check = self.capture_background(self.hwnd)
                 if (
                     second_check is not None
@@ -2462,15 +2494,14 @@ class MacroWorker(QThread):
                         f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ"
                     )
                     return True
-
-            if attempt < 3:
+            if attempt < 2:
                 time.sleep(0.5)
         self.log_signal.emit(
-            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 3 ครั้ง"
+            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 2 ครั้ง"
         )
         self.send_bug_webhook(
             "ปิดกระเป๋าไม่สำเร็จ",
-            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 3 ครั้ง",
+            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 2 ครั้ง",
             alert_key="inventory_close_failed",
         )
         try:
@@ -2498,6 +2529,7 @@ class MacroWorker(QThread):
             if (x_end - x_start) < 10 or (y_end - y_start) < 10: return
             hud_crop = bg_img[y_start:y_end, x_start:x_end]
             
+            # Check if screen/HUD region is dark/loading screen
             if float(np.std(hud_crop)) < 8.0 or float(np.mean(hud_crop)) < 12.0:
                 self.hud_preview_signal.emit(hud_crop, np.zeros_like(hud_crop), -1, -1)
                 return
@@ -2517,12 +2549,8 @@ class MacroWorker(QThread):
 
     def execute_feeding_sequence(self, need_food, need_water):
         self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
-        orig_pos = None
-        try:
-            orig_pos = win32api.GetCursorPos()
-        except Exception:
-            pass
-        if not self.activate_game_window():
+        orig_pos = self.activate_game_window()
+        if orig_pos is None:
             self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
             return False
         # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
@@ -2531,22 +2559,20 @@ class MacroWorker(QThread):
             return False
         self.safe_sleep(0.5)
         if not self.is_running or self.is_exiting: return False
-        if not self.send_game_key("x", duration=0.15):
+        if not self.send_game_key("x"):
             return False
-        self.safe_sleep(1.0)
+        self.safe_sleep(0.8)
         if not self.is_running or self.is_exiting: return False
         if need_water:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
-            self.send_game_key("6", duration=0.15)
-            self.safe_sleep(0.3)
-            self.send_game_key("6", duration=0.15)
+            if not self.send_game_key("6"):
+                return False
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
         if need_food:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
-            self.send_game_key("7", duration=0.15)
-            self.safe_sleep(0.3)
-            self.send_game_key("7", duration=0.15)
+            if not self.send_game_key("7"):
+                return False
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
         self.ensure_not_in_pause_menu()
@@ -2575,7 +2601,7 @@ class MacroWorker(QThread):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 self.safe_sleep(2.0)
         self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-        if not self.send_game_key("t", duration=0.12):
+        if not self.send_game_key("t"):
             return False
         self.safe_sleep(1.0)
         if orig_pos:
@@ -2620,8 +2646,7 @@ class MacroWorker(QThread):
             if now - self.last_feeding_attempt_time < 60.0:
                 return
             self.last_feeding_attempt_time = now
-            # หากตัวใดตัวหนึ่งต่ำ ให้ทำการกินทั้งคู่เพื่อเติมหลอดให้เต็ม
-            self.execute_feeding_sequence(need_food=True, need_water=True)
+            self.execute_feeding_sequence(need_food, need_water)
 
     def double_click_at(self, abs_x, abs_y):
         try:
@@ -3947,9 +3972,6 @@ class MacroWorker(QThread):
                 if not self.is_running:
                     time.sleep(0.5)
                     continue
-                if getattr(self, "is_executing_task", False):
-                    time.sleep(0.3)
-                    continue
                 if self.recover_from_rockstar_confirmation(bg_img):
                     time.sleep(0.5)
                     continue
@@ -4207,17 +4229,16 @@ class MacroWorker(QThread):
                     match_status["gold"] = (False, ore_result[2] if ore_result else 0.0)
                 
                 self.gold_preview_signal.emit(preview_ore_img, preview_text_img, preview_ore_score, preview_text_score, preview_target_thresh)
-                if not getattr(self, "is_executing_task", False) and not self.gold_disposal_stage:
-                    if self.hud_region and self.auto_feed_enabled and time.time() - self.last_hud_check_time > 10.0:
-                        self.last_hud_check_time = time.time()
-                        self.check_and_run_auto_feed()
+                if self.hud_region and self.auto_feed_enabled and time.time() - self.last_hud_check_time > 10.0:
+                    self.last_hud_check_time = time.time()
+                    self.check_and_run_auto_feed()
 
-                    if self.auto_store_enabled and time.time() - self.last_diamond_check_time > 5.0:
-                        self.last_diamond_check_time = time.time()
-                        if self.diamond_mode == "no_car_full":
-                            self.check_and_run_no_car_full_mode()
-                        else:
-                            self.check_and_run_timed_diamond_store()
+                if self.auto_store_enabled and time.time() - self.last_diamond_check_time > 5.0:
+                    self.last_diamond_check_time = time.time()
+                    if self.diamond_mode == "no_car_full":
+                        self.check_and_run_no_car_full_mode()
+                    else:
+                        self.check_and_run_timed_diamond_store()
 
                 self.match_signal.emit(match_status)
                 time.sleep(0.3)
