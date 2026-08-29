@@ -2994,10 +2994,23 @@ class MacroWorker(QThread):
         default_x = (scaled_bag[0]/w_img, (scaled_bag[0]+scaled_bag[2])/w_img) if scaled_bag else (0.33, 0.85)
         default_y = (max(0.24, scaled_bag[1]/h_img), (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.24, 0.90)
         dia_x, dia_y = self.get_region_ranges(self.diamond_search_region, w_img, h_img, default_x, default_y)
-        diamond_result = self.find_image(bg_img, "templates/diamond_icon.png", 0.86, x_range=dia_x, y_range=dia_y)
-        if diamond_result and diamond_result[0] is not None:
-            if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
-                diamond_result = None
+        
+        diamond_result = None
+        for tpl_name, tpl_th in [
+            ("templates/diamond_icon.png", 0.65),
+            ("templates/diamond_icon_tight.png", 0.65),
+            ("templates/diamond_trunk.png", 0.65),
+            ("templates/diamond_icon.png", 0.52),
+        ]:
+            diamond_result = self.find_image(bg_img, tpl_name, tpl_th, x_range=dia_x, y_range=dia_y)
+            if not diamond_result or diamond_result[0] is None:
+                diamond_result = self.find_image(bg_img, tpl_name, tpl_th)
+            if diamond_result and diamond_result[0] is not None:
+                if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                    diamond_result = None
+                else:
+                    break
+
         if diamond_result and diamond_result[0] is not None:
             dx, dy, val = diamond_result
             # Load template to get actual dimensions for proper slot extraction
@@ -3057,59 +3070,74 @@ class MacroWorker(QThread):
         dia_x, dia_y = self.get_region_ranges(
             self.diamond_search_region, w_img, h_img, default_x, default_y
         )
-        diamond_result = self.find_image(
-            bg_img, "templates/diamond_icon.png", 0.86,
-            x_range=dia_x, y_range=dia_y
-        )
-        if diamond_result and diamond_result[0] is not None:
-            if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
-                diamond_result = None
+        
+        diamond_result = None
+        for tpl_name, tpl_th in [
+            ("templates/diamond_icon.png", 0.65),
+            ("templates/diamond_icon_tight.png", 0.65),
+            ("templates/diamond_trunk.png", 0.65),
+            ("templates/diamond_icon.png", 0.52),
+        ]:
+            diamond_result = self.find_image(bg_img, tpl_name, tpl_th, x_range=dia_x, y_range=dia_y)
+            if not diamond_result or diamond_result[0] is None:
+                diamond_result = self.find_image(bg_img, tpl_name, tpl_th)
+            if diamond_result and diamond_result[0] is not None:
+                if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                    diamond_result = None
+                else:
+                    break
+
         elapsed = time.time() - self.diamond_cycle_started_at
         interval_seconds = self.diamond_interval_minutes * 60
         remaining = max(0, int(interval_seconds - elapsed))
+        
+        val = diamond_result[2] if diamond_result else 0.0
         if diamond_result and diamond_result[0] is not None:
-            dx, dy, val = diamond_result
+            dx, dy, _ = diamond_result
             preview_size = 76
             x0, x1 = max(0, dx - preview_size // 2), min(w_img, dx + preview_size // 2)
             y0, y1 = max(0, dy - preview_size // 2), min(h_img, dy + preview_size // 2)
             slot_img = bg_img[y0:y1, x0:x1]
-            if elapsed >= interval_seconds:
-                now = time.time()
-                if now - self.last_diamond_storage_time < 120.0:
-                    retry_in = int(
-                        120.0 - (now - self.last_diamond_storage_time)
-                    )
-                    self.diamond_preview_signal.emit(
-                        slot_img,
-                        val,
-                        False,
-                        f"เก็บไม่สำเร็จ รอลองใหม่อีก "
-                        f"{retry_in} วินาที"
-                    )
-                    return
-                self.last_diamond_storage_time = now
-                self.diamond_preview_signal.emit(
-                    slot_img, val, True,
-                    f"ครบ {self.diamond_interval_minutes} นาที กำลังเก็บเพชรเข้ารถ"
+        else:
+            slot_img = np.zeros((10, 10, 3), dtype=np.uint8)
+
+        if elapsed >= interval_seconds:
+            now = time.time()
+            if now - self.last_diamond_storage_time < 120.0:
+                retry_in = int(
+                    120.0 - (now - self.last_diamond_storage_time)
                 )
-                if self.execute_store_diamonds_sequence():
-                    self.diamond_cycle_started_at = time.time()
-                    self.log_signal.emit(
-                        f"[ระบบเก็บเพชร] ขั้นต่อไป: "
-                        f"เก็บเข้ารถรอบใหม่ในอีก "
-                        f"{self.diamond_interval_minutes} นาที"
-                    )
-            else:
                 self.diamond_preview_signal.emit(
-                    slot_img, val, False,
-                    f"โหมดจับเวลา: เหลือ {remaining // 60}:{remaining % 60:02d} นาที"
+                    slot_img,
+                    val,
+                    False,
+                    f"เก็บไม่สำเร็จ รอลองใหม่อีก {retry_in} วินาที"
+                )
+                return
+            self.last_diamond_storage_time = now
+            self.diamond_preview_signal.emit(
+                slot_img, val, True,
+                f"ครบ {self.diamond_interval_minutes} นาที กำลังเก็บเพชรเข้ารถ"
+            )
+            self.log_signal.emit(
+                f"[ระบบเก็บเพชร] ⏰ ครบกำหนดเวลา {self.diamond_interval_minutes} นาที เริ่มกระบวนการเก็บเพชรลงรถ..."
+            )
+            success = self.execute_store_diamonds_sequence()
+            self.diamond_cycle_started_at = time.time()
+            if success:
+                self.log_signal.emit(
+                    f"[ระบบเก็บเพชร] ขั้นต่อไป: เก็บเข้ารถรอบใหม่ในอีก {self.diamond_interval_minutes} นาที"
+                )
+            else:
+                self.log_signal.emit(
+                    f"[ระบบเก็บเพชร] รอบนี้เก็บไม่สำเร็จ จะลองใหม่อีก {self.diamond_interval_minutes} นาที (หรือสั่ง !store ทาง Discord)"
                 )
         else:
-            val = diamond_result[2] if diamond_result else 0.0
+            status_text = f"โหมดจับเวลา: เหลือ {remaining // 60}:{remaining % 60:02d} นาที"
+            if not diamond_result or diamond_result[0] is None:
+                status_text += " (ยังไม่พบรูปเพชรในกระเป๋า)"
             self.diamond_preview_signal.emit(
-                np.zeros((10, 10, 3), dtype=np.uint8),
-                val, False,
-                f"โหมดจับเวลา: ยังไม่พบเพชร (เหลือ {remaining // 60}:{remaining % 60:02d} นาที)"
+                slot_img, val, False, status_text
             )
 
     def check_and_run_no_car_full_mode(self):
