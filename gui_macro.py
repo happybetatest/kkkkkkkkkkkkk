@@ -2376,11 +2376,27 @@ class MacroWorker(QThread):
             return False
         h_img, w_img = bg_img.shape[:2]
 
-        # ตรวจจับแถบหัวข้อกระเป๋า (ความแม่นยำสูง 100% แยกกระเป๋าเปิด/ปิดได้อย่างสมบูรณ์แบบ)
-        res_bar = self.find_image(bg_img, "templates/inventory_bar.png", 0.60)
+        # 1. ตรวจจับแถบหัวข้อกระเป๋า
+        res_bar = self.find_image(bg_img, "templates/inventory_bar.png", 0.38)
         if res_bar and res_bar[0] is not None:
             bx, by, _ = res_bar
             if int(h_img * 0.15) <= by <= int(h_img * 0.80):
+                return True
+
+        # 2. ตรวจจับไอเทมทอง/เพชรในกระเป๋า
+        for tpl, th in (
+            ("templates/gold_ore.png", 0.50),
+            ("templates/diamond_icon.png", 0.50),
+            ("templates/gold.png", 0.50),
+            ("templates/diamond_trunk.png", 0.50),
+            ("templates/destroy.png", 0.48),
+        ):
+            res = self.find_image(bg_img, tpl, th)
+            if res and res[0] is not None:
+                mx, my, _ = res
+                # Exclude top-right Quest HUD
+                if my < int(h_img * 0.24) and mx > int(w_img * 0.65):
+                    continue
                 return True
         return False
 
@@ -2390,96 +2406,24 @@ class MacroWorker(QThread):
                 f"{log_prefix} กระเป๋าเปิดอยู่แล้ว ไม่กด T ซ้ำ"
             )
             return True
-        for attempt in range(1, 4):
-            if attempt == 1:
-                self.log_signal.emit(
-                    f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังกด T..."
-                )
-            else:
-                self.log_signal.emit(
-                    f"{log_prefix} ยังไม่พบหน้ากระเป๋า กำลังลองกด T ซ้ำ (รอบที่ {attempt}/3)..."
-                )
-            self.activate_game_window()
-            time.sleep(0.15)
-            if not self.send_game_key("t", duration=0.05):
-                continue
-            time.sleep(1.0)
-            if self.is_inventory_open():
-                self.log_signal.emit(
-                    f"{log_prefix} ตรวจสอบแล้ว: เปิดกระเป๋าสำเร็จ"
-                )
-                return True
-        self.log_signal.emit(
-            f"{log_prefix} ส่งปุ่ม T ครบ 3 ครั้งแล้ว แต่ยังตรวจไม่พบหน้ากระเป๋า"
-        )
-        return False
+        self.log_signal.emit(f"{log_prefix} กำลังกด T เปิดกระเป๋า...")
+        self.activate_game_window()
+        time.sleep(0.15)
+        self.send_game_key("t", duration=0.15)
+        time.sleep(1.0)
+        return True
 
     def ensure_inventory_closed(self, log_prefix="[ระบบ]"):
         initial_bg = self.capture_background(self.hwnd)
-        if initial_bg is None:
-            self.log_signal.emit(
-                f"{log_prefix} ยกเลิกการปิดกระเป๋า เพราะจับภาพยืนยันไม่ได้"
-            )
-            return False
-        if not self.is_inventory_open(initial_bg):
+        if initial_bg is not None and not self.is_inventory_open(initial_bg):
             self.log_signal.emit(f"{log_prefix} กระเป๋าปิดอยู่แล้ว")
             return True
-        for attempt in range(1, 4):
-            if attempt == 1:
-                self.log_signal.emit(
-                    f"{log_prefix} พบว่ากระเป๋าเปิดอยู่ "
-                    "กำลังกด T เพื่อปิด..."
-                )
-            else:
-                self.log_signal.emit(
-                    f"{log_prefix} กระเป๋ายังเปิดอยู่ "
-                    f"กำลังลองกด T ซ้ำ (รอบที่ {attempt}/3)..."
-                )
-            self.activate_game_window()
-            time.sleep(0.15)
-            # กดปุ่ม T ด้วยระยะเวลา 0.15 วินาที เพื่อให้เกมรับคำสั่ง 100%
-            if not self.send_game_key("t", duration=0.15):
-                return False
-            time.sleep(1.2)
-            first_check = self.capture_background(self.hwnd)
-            closed_once = (
-                first_check is not None
-                and not self.is_inventory_open(first_check)
-            )
-            if closed_once:
-                time.sleep(0.4)
-                second_check = self.capture_background(self.hwnd)
-                if (
-                    second_check is not None
-                    and not self.is_inventory_open(second_check)
-                ):
-                    self.log_signal.emit(
-                        f"{log_prefix} ตรวจสอบแล้ว: ปิดกระเป๋าสำเร็จ"
-                    )
-                    return True
-            if attempt < 3:
-                time.sleep(0.4)
-        self.log_signal.emit(
-            f"{log_prefix} ยังปิดกระเป๋าไม่สำเร็จหลังลอง 3 ครั้ง"
-        )
-        self.send_bug_webhook(
-            "ปิดกระเป๋าไม่สำเร็จ",
-            f"{log_prefix} ลองกด T เพื่อปิดกระเป๋าแล้ว 3 ครั้ง",
-            alert_key="inventory_close_failed",
-        )
-        try:
-            debug_bg = self.capture_background(self.hwnd)
-            if debug_bg is not None:
-                cv2.imwrite(
-                    get_writable_path("debug_inventory_close_failed.png"),
-                    debug_bg,
-                )
-                self.log_signal.emit(
-                    f"{log_prefix} บันทึกภาพ Debug: debug_inventory_close_failed.png"
-                )
-        except Exception:
-            pass
-        return False
+        self.log_signal.emit(f"{log_prefix} กดปุ่ม T ปิดกระเป๋า...")
+        self.activate_game_window()
+        time.sleep(0.15)
+        self.send_game_key("t", duration=0.15)
+        time.sleep(0.8)
+        return True
 
     def process_hud_preview(self, bg_img):
         try:
