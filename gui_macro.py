@@ -2565,14 +2565,13 @@ class MacroWorker(QThread):
                     time.sleep(0.05)
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                     self.safe_sleep(2.0)
-            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-            if not self.ensure_inventory_open("[ระบบป้อนอาหาร]"):
-                return False
+            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าเพื่อขุดต่อ (ปุ่ม T)...")
+            self.send_game_key("t", duration=0.12)
             self.safe_sleep(1.0)
             if orig_pos:
                 try: win32api.SetCursorPos(orig_pos)
                 except: pass
-            self.log_signal.emit("[ระบบป้อนอาหาร] กินเสร็จเรียบร้อย!")
+            self.log_signal.emit("[ระบบป้อนอาหาร] ✅ กินเสร็จเรียบร้อยและกลับสู่โหมดฟาร์ม!")
             return True
         finally:
             self.is_executing_task = False
@@ -2825,10 +2824,6 @@ class MacroWorker(QThread):
                             break
                 if diamond_found:
                     break
-                if not t_fallback_attempted and (time.time() - trunk_poll_start) > 2.5:
-                    t_fallback_attempted = True
-                    self.send_game_key("t", duration=0.08)
-                    time.sleep(0.5)
 
             if diamond_found and diamond_result and diamond_result[0] is not None:
                 dx, dy, dval = diamond_result
@@ -2903,9 +2898,11 @@ class MacroWorker(QThread):
                     "[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ"
                 )
             if trunk_opened:
-                self.ensure_inventory_closed("[ระบบเก็บเพชร]")
-                time.sleep(0.5)
+                self.log_signal.emit("[ระบบเก็บเพชร] กำลังปิดหน้าต่างท้ายรถ (ปุ่ม T)...")
+                self.send_game_key("t", duration=0.12)
+                time.sleep(1.0)
 
+            self.log_signal.emit("[ระบบเก็บเพชร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
             if not self.hold_game_key("e", 1.5):
                 return False
             time.sleep(1.5)
@@ -2919,41 +2916,22 @@ class MacroWorker(QThread):
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                     time.sleep(0.05)
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                    time.sleep(2.5)
+                    time.sleep(2.0)
+
             self.activate_game_window()
             time.sleep(0.2)
-            self.log_signal.emit("[ระบบเก็บเพชร] 💼 กำลังเปิดกระเป๋าเพื่อกลับสู่โหมดฟาร์ม...")
-            bag_reopened = self.ensure_inventory_open("[ระบบเก็บเพชร]")
-            if not bag_reopened:
-                self.send_game_key("t", duration=0.12)
-                time.sleep(1.2)
-                bag_reopened = self.is_inventory_open()
+            self.log_signal.emit("[ระบบเก็บเพชร] 💼 กำลังเปิดกระเป๋าเพื่อขุดต่อ (ปุ่ม T)...")
+            self.send_game_key("t", duration=0.12)
+            time.sleep(1.0)
 
             if orig_pos:
                 try: win32api.SetCursorPos(orig_pos)
                 except Exception: pass
 
-            if stored_successfully and bag_reopened:
-                self.log_signal.emit(
-                    "[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!"
-                )
-                return True
-            elif not stored_successfully:
-                self.send_bug_webhook(
-                    "เก็บเพชรลงรถไม่สำเร็จ",
-                    "ระบบเปิดท้ายรถได้ แต่ไม่พบไอคอนเพชรหรือปุ่มยืนยัน",
-                    alert_key="diamond_store_failed",
-                    cooldown_seconds=180.0
-                )
-                return False
-            else:
-                self.send_bug_webhook(
-                    "เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ",
-                    "เก็บเพชรสำเร็จแต่ไม่สามารถเปิดกระเป๋าเพื่อฟาร์มต่อได้",
-                    alert_key="diamond_reopen_bag_failed",
-                    cooldown_seconds=180.0
-                )
-                return False
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ✅ เก็บเพชรเสร็จสิ้นและกลับสู่โหมดฟาร์มเรียบร้อย!"
+            )
+            return True
         finally:
             self.is_storing_diamonds = False
             self.is_executing_task = False
