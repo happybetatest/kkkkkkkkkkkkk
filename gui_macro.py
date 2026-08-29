@@ -2383,7 +2383,7 @@ class MacroWorker(QThread):
                 )
             self.activate_game_window()
             time.sleep(0.15)
-            if not self.send_game_key("t", duration=0.05):
+            if not self.send_game_key("t", duration=0.10):
                 continue
             time.sleep(1.0)
             if self.is_inventory_open():
@@ -2423,17 +2423,6 @@ class MacroWorker(QThread):
                 )
                 return False
             time.sleep(0.15)
-            
-            # ย้ายเมาส์ไปพื้นที่ว่างมุมบนซ้ายของจอเกมเพื่อ Unfocus ช่องค้นหา/ข้อความ ก่อนกด T
-            geom = self.get_client_geometry()
-            if geom:
-                gx, gy, _, _ = geom
-                win32api.SetCursorPos((gx + 40, gy + 40))
-                time.sleep(0.08)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.04)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(0.1)
 
             if not self.send_game_key("t", duration=0.10):
                 return False
