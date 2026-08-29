@@ -2549,32 +2549,40 @@ class MacroWorker(QThread):
 
     def execute_feeding_sequence(self, need_food, need_water):
         self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
-        orig_pos = self.activate_game_window()
-        if orig_pos is None:
+        orig_pos = None
+        try:
+            orig_pos = win32api.GetCursorPos()
+        except Exception:
+            pass
+        if not self.activate_game_window():
             self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
             return False
-        # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
-        if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
-            self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
-            return False
+        
+        # ปิดกระเป๋าหากเปิดอยู่
+        self.ensure_inventory_closed("[ระบบป้อนอาหาร]")
         self.safe_sleep(0.5)
         if not self.is_running or self.is_exiting: return False
-        if not self.send_game_key("x"):
-            return False
-        self.safe_sleep(0.8)
+        
+        # ปลดล็อคอนิเมชันขุด/ถือของ
+        self.send_game_key("x", duration=0.15)
+        self.safe_sleep(1.0)
         if not self.is_running or self.is_exiting: return False
+        
         if need_water:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
-            if not self.send_game_key("6"):
-                return False
+            self.send_game_key("6", duration=0.15)
+            self.safe_sleep(0.3)
+            self.send_game_key("6", duration=0.15)
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
         if need_food:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
-            if not self.send_game_key("7"):
-                return False
+            self.send_game_key("7", duration=0.15)
+            self.safe_sleep(0.3)
+            self.send_game_key("7", duration=0.15)
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
+            
         self.ensure_not_in_pause_menu()
         self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
         if not self.hold_game_key("e", 1.5):
@@ -2582,16 +2590,7 @@ class MacroWorker(QThread):
         self.safe_sleep(1.5)
         bg_after = self.capture_background(self.hwnd)
         if bg_after is not None:
-            h_img, w_img, _ = bg_after.shape
-            scaled_af = self.get_scaled_region(self.auto_farm_region)
-            af_range_x = (scaled_af[0]/w_img, (scaled_af[0]+scaled_af[2])/w_img) if scaled_af else None
-            af_range_y = (scaled_af[1]/h_img, (scaled_af[1]+scaled_af[3])/h_img) if scaled_af else None
-            
-            btn_result = self.find_image(bg_after, "templates/auto_farm.png", 0.85, x_range=af_range_x, y_range=af_range_y)
-            if not btn_result or btn_result[0] is None:
-                # [แก้ไข] ค้นหาปุ่มเริ่มงานทั่วหน้าจอ ป้องกันตั้งพิกัดคลาดเคลื่อน
-                btn_result = self.find_image(bg_after, "templates/auto_farm.png", 0.70)
-                
+            btn_result = self.find_image(bg_after, "templates/auto_farm.png", 0.70)
             if btn_result and btn_result[0] is not None:
                 bx, by, bval = btn_result
                 win32api.SetCursorPos(self.client_to_screen(bx, by))
@@ -2601,8 +2600,7 @@ class MacroWorker(QThread):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 self.safe_sleep(2.0)
         self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-        if not self.send_game_key("t"):
-            return False
+        self.send_game_key("t", duration=0.12)
         self.safe_sleep(1.0)
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
@@ -2646,7 +2644,7 @@ class MacroWorker(QThread):
             if now - self.last_feeding_attempt_time < 60.0:
                 return
             self.last_feeding_attempt_time = now
-            self.execute_feeding_sequence(need_food, need_water)
+            self.execute_feeding_sequence(need_food=True, need_water=True)
 
     def double_click_at(self, abs_x, abs_y):
         try:
