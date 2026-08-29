@@ -2521,32 +2521,39 @@ class MacroWorker(QThread):
             self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
             return False
         
-        # ปิดกระเป๋าหากเปิดอยู่
-        self.ensure_inventory_closed("[ระบบป้อนอาหาร]")
-        self.safe_sleep(0.5)
+        # 1. กดปุ่ม T ปิดกระเป๋าลงไป เพื่อให้สามารถใช้ปุ่มฮ็อตบาร์ 6 และ 7 ได้
+        self.log_signal.emit("[ระบบป้อนอาหาร] กดปุ่ม T ปิดกระเป๋า...")
+        self.send_game_key("t", duration=0.15)
+        self.safe_sleep(0.8)
         if not self.is_running or self.is_exiting: return False
         
-        # ปลดล็อคอนิเมชันขุด/ถือของ
-        self.send_game_key("x", duration=0.15)
+        # 2. ปลดล็อคอนิเมชันขุด/เอาแขนลง (กด X)
+        self.log_signal.emit("[ระบบป้อนอาหาร] กดปุ่ม X ปลดล็อคอนิเมชัน...")
+        self.send_game_key("x", duration=0.20)
         self.safe_sleep(1.0)
         if not self.is_running or self.is_exiting: return False
         
+        # 3. กินน้ำ (ช่อง 6)
         if need_water:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
-            self.send_game_key("6", duration=0.15)
+            self.send_game_key("6", duration=0.20)
             self.safe_sleep(0.3)
-            self.send_game_key("6", duration=0.15)
+            self.send_game_key("6", duration=0.20)
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
+            
+        # 4. กินอาหาร (ช่อง 7)
         if need_food:
             self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
-            self.send_game_key("7", duration=0.15)
+            self.send_game_key("7", duration=0.20)
             self.safe_sleep(0.3)
-            self.send_game_key("7", duration=0.15)
+            self.send_game_key("7", duration=0.20)
             self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
             
         self.ensure_not_in_pause_menu()
+        
+        # 5. กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที แล้วคลิกเริ่มงาน)
         self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
         if not self.hold_game_key("e", 1.5):
             return False
@@ -2562,8 +2569,10 @@ class MacroWorker(QThread):
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                 self.safe_sleep(2.0)
+                
+        # 6. เปิดกระเป๋าอีกครั้งเพื่อขุดต่อ (ปุ่ม T)
         self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-        self.send_game_key("t", duration=0.12)
+        self.send_game_key("t", duration=0.15)
         self.safe_sleep(1.0)
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
