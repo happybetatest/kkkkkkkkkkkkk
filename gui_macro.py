@@ -1368,6 +1368,7 @@ class MacroWorker(QThread):
         self.idle_fail_streak = 0
         self.idle_inventory_recovery = False
         self.idle_inventory_check_until = 0.0
+        self.is_executing_task = False
         self.last_rockstar_escape_time = 0.0
         self.discord_bug_alert_times = {}
 
@@ -2233,7 +2234,7 @@ class MacroWorker(QThread):
 
     def update_character_idle_state(self, bg_img):
         """Open the inventory after a genuinely static gameplay interval."""
-        if getattr(self, "is_storing_diamonds", False) or self.is_inventory_open(bg_img) or self.gold_disposal_stage:
+        if getattr(self, "is_executing_task", False) or getattr(self, "is_storing_diamonds", False) or self.gold_disposal_stage or self.is_inventory_open(bg_img):
             self.last_activity_frame = None
             self.character_idle_since = 0.0
             return False
@@ -2507,61 +2508,67 @@ class MacroWorker(QThread):
 
     def execute_feeding_sequence(self, need_food, need_water):
         self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
+        self.is_executing_task = True
         orig_pos = None
         try:
-            orig_pos = win32api.GetCursorPos()
-        except Exception:
-            pass
-        if not self.activate_game_window():
-            self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
-            return False
-        # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
-        if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
-            self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
-            return False
-        self.safe_sleep(0.5)
-        if not self.is_running or self.is_exiting: return False
-        if not self.send_game_key("x"):
-            return False
-        self.safe_sleep(0.8)
-        if not self.is_running or self.is_exiting: return False
-        if need_water:
-            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
-            if not self.send_game_key("6"):
+            try:
+                orig_pos = win32api.GetCursorPos()
+            except Exception:
+                pass
+            if not self.activate_game_window():
+                self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
                 return False
-            self.safe_sleep(8.0)
-            if not self.is_running or self.is_exiting: return False
-        if need_food:
-            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
-            if not self.send_game_key("7"):
+            # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
+            if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
+                self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
                 return False
-            self.safe_sleep(8.0)
+            self.safe_sleep(0.5)
             if not self.is_running or self.is_exiting: return False
-        self.ensure_not_in_pause_menu()
-        self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
-        if not self.hold_game_key("e", 1.5):
-            return False
-        self.safe_sleep(1.5)
-        bg_after = self.capture_background(self.hwnd)
-        if bg_after is not None:
-            btn_result = self.find_image(bg_after, "templates/auto_farm.png", 0.70)
-            if btn_result and btn_result[0] is not None:
-                bx, by, bval = btn_result
-                win32api.SetCursorPos(self.client_to_screen(bx, by))
-                time.sleep(0.1)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.05)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                self.safe_sleep(2.0)
-        self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
-        if not self.ensure_inventory_open("[ระบบป้อนอาหาร]"):
-            return False
-        self.safe_sleep(1.0)
-        if orig_pos:
-            try: win32api.SetCursorPos(orig_pos)
-            except: pass
-        self.log_signal.emit("[ระบบป้อนอาหาร] กินเสร็จเรียบร้อย!")
-        return True
+            if not self.send_game_key("x"):
+                return False
+            self.safe_sleep(0.8)
+            if not self.is_running or self.is_exiting: return False
+            if need_water:
+                self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
+                if not self.send_game_key("6"):
+                    return False
+                self.safe_sleep(8.0)
+                if not self.is_running or self.is_exiting: return False
+            if need_food:
+                self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
+                if not self.send_game_key("7"):
+                    return False
+                self.safe_sleep(8.0)
+                if not self.is_running or self.is_exiting: return False
+            self.ensure_not_in_pause_menu()
+            self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
+            if not self.hold_game_key("e", 1.5):
+                return False
+            self.safe_sleep(1.5)
+            bg_after = self.capture_background(self.hwnd)
+            if bg_after is not None:
+                btn_result = self.find_image(bg_after, "templates/auto_farm.png", 0.70)
+                if btn_result and btn_result[0] is not None:
+                    bx, by, bval = btn_result
+                    win32api.SetCursorPos(self.client_to_screen(bx, by))
+                    time.sleep(0.1)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.05)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    self.safe_sleep(2.0)
+            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
+            if not self.ensure_inventory_open("[ระบบป้อนอาหาร]"):
+                return False
+            self.safe_sleep(1.0)
+            if orig_pos:
+                try: win32api.SetCursorPos(orig_pos)
+                except: pass
+            self.log_signal.emit("[ระบบป้อนอาหาร] กินเสร็จเรียบร้อย!")
+            return True
+        finally:
+            self.is_executing_task = False
+            self.character_idle_since = 0.0
+            self.last_activity_sample_time = time.time() + 15.0
 
     def check_and_run_auto_feed(self):
         bg_img = self.capture_background(self.hwnd)
@@ -2928,6 +2935,9 @@ class MacroWorker(QThread):
                 return False
         finally:
             self.is_storing_diamonds = False
+            self.is_executing_task = False
+            self.character_idle_since = 0.0
+            self.last_activity_sample_time = time.time() + 15.0
 
     def check_and_run_store_diamonds(self, trigger_storage=False):
         bg_img = self.capture_background(self.hwnd)
@@ -3993,6 +4003,9 @@ class MacroWorker(QThread):
                 if not self.is_running:
                     time.sleep(0.5)
                     continue
+                if getattr(self, "is_executing_task", False):
+                    time.sleep(0.3)
+                    continue
                 if self.recover_from_rockstar_confirmation(bg_img):
                     time.sleep(0.5)
                     continue
@@ -4250,16 +4263,17 @@ class MacroWorker(QThread):
                     match_status["gold"] = (False, ore_result[2] if ore_result else 0.0)
                 
                 self.gold_preview_signal.emit(preview_ore_img, preview_text_img, preview_ore_score, preview_text_score, preview_target_thresh)
-                if self.hud_region and self.auto_feed_enabled and time.time() - self.last_hud_check_time > 10.0:
-                    self.last_hud_check_time = time.time()
-                    self.check_and_run_auto_feed()
+                if not getattr(self, "is_executing_task", False) and not self.gold_disposal_stage:
+                    if self.hud_region and self.auto_feed_enabled and time.time() - self.last_hud_check_time > 10.0:
+                        self.last_hud_check_time = time.time()
+                        self.check_and_run_auto_feed()
 
-                if self.auto_store_enabled and time.time() - self.last_diamond_check_time > 5.0:
-                    self.last_diamond_check_time = time.time()
-                    if self.diamond_mode == "no_car_full":
-                        self.check_and_run_no_car_full_mode()
-                    else:
-                        self.check_and_run_timed_diamond_store()
+                    if self.auto_store_enabled and time.time() - self.last_diamond_check_time > 5.0:
+                        self.last_diamond_check_time = time.time()
+                        if self.diamond_mode == "no_car_full":
+                            self.check_and_run_no_car_full_mode()
+                        else:
+                            self.check_and_run_timed_diamond_store()
 
                 self.match_signal.emit(match_status)
                 time.sleep(0.3)
