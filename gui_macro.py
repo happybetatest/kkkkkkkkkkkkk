@@ -2712,28 +2712,34 @@ class MacroWorker(QThread):
 
     def execute_store_diamonds_sequence(self):
         self.log_signal.emit("[ระบบเก็บเพชร] เริ่มกระบวนการเก็บเพชรลงรถ...")
-        orig_pos = self.activate_game_window()
-        if orig_pos is None:
+        orig_pos = None
+        try:
+            orig_pos = win32api.GetCursorPos()
+        except Exception:
+            pass
+        if not self.activate_game_window():
             self.log_signal.emit(
                 "[ระบบเก็บเพชร] ยกเลิกรอบเก็บ "
                 "เพราะ FiveM ไม่ได้อยู่ด้านหน้า"
             )
             return False
-        if not self.ensure_inventory_closed("[ระบบเก็บเพชร]"):
-            self.log_signal.emit(
-                "[ระบบเก็บเพชร] ยกเลิกรอบ "
-                "เพราะตรวจว่ายังปิดกระเป๋าไม่ได้"
-            )
-            return False
-        if not self.send_game_key("x"):
-            return False
-        time.sleep(0.8)
+        
+        # 1. กดปุ่ม T ปิดกระเป๋าลงไปก่อน
+        self.log_signal.emit("[ระบบเก็บเพชร] กดปุ่ม T ปิดกระเป๋า...")
+        self.send_game_key("t", duration=0.15)
+        self.safe_sleep(0.8)
+        if not self.is_running or self.is_exiting: return False
+        
+        # 2. ปลดล็อคอนิเมชันขุด
+        self.send_game_key("x", duration=0.20)
+        self.safe_sleep(1.0)
+        if not self.is_running or self.is_exiting: return False
 
         trunk_opened = False
         stored_successfully = False
 
         for trunk_attempt in range(1, 4):
-            if self.activate_game_window() is None:
+            if not self.activate_game_window():
                 return False
             geometry = self.get_client_geometry()
             if not geometry:
@@ -2748,7 +2754,7 @@ class MacroWorker(QThread):
             else:
                 self.log_signal.emit(f"[ระบบเก็บเพชร] ยังไม่พบปุ่มท้ายรถ กำลังลองกด H ซ้ำ (รอบที่ {trunk_attempt}/3)...")
 
-            self.send_game_key("h", duration=0.10)
+            self.send_game_key("h", duration=0.15)
 
             # Polling for trunk_ready button over 2.5s to allow radial UI animation to finish
             poll_start = time.time()
@@ -2789,12 +2795,10 @@ class MacroWorker(QThread):
             self.log_signal.emit(
                 "[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ หลังลองครบ 3 ครั้ง ยกเลิกรอบนี้"
             )
-            self.ensure_inventory_open("[ระบบเก็บเพชร]")
+            self.send_game_key("t", duration=0.15)
             if orig_pos:
-                try:
-                    win32api.SetCursorPos(orig_pos)
-                except Exception:
-                    pass
+                try: win32api.SetCursorPos(orig_pos)
+                except Exception: pass
             return False
 
         bg_trunk = self.capture_background(self.hwnd)
@@ -2849,22 +2853,26 @@ class MacroWorker(QThread):
                                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
                                 time.sleep(1.5)
                                 stored_successfully = True
-        if not stored_successfully:
-            self.log_signal.emit(
-                "[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ"
-            )
+
+        if stored_successfully:
+            self.log_signal.emit("[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!")
+        else:
+            self.log_signal.emit("[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ")
+
+        # 3. ปิดหน้าต่างท้ายรถ (กด T)
         if trunk_opened:
-            # ปิดหน้าต่างท้ายรถ/กระเป๋าอย่างปลอดภัย (ไม่กด Esc เปล่าๆ เพื่อไม่ให้เปิด Pause Menu)
-            self.ensure_inventory_closed("[ระบบเก็บเพชร]")
-            time.sleep(0.5)
-            self.ensure_not_in_pause_menu()
+            self.send_game_key("t", duration=0.15)
+            self.safe_sleep(0.8)
+
         self.ensure_not_in_pause_menu()
+        
+        # 4. กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที แล้วคลิกเริ่มงาน)
+        self.log_signal.emit("[ระบบเก็บเพชร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
         if not self.hold_game_key("e", 1.5):
             return False
-        time.sleep(1.5)
+        self.safe_sleep(1.5)
         bg_final = self.capture_background(self.hwnd)
         if bg_final is not None:
-            # [แก้ไข] ค้นหาปุ่มเริ่มงานทั่วหน้าจอ ป้องกันตั้งพิกัดคลาดเคลื่อน
             btn_result = self.find_image(bg_final, "templates/auto_farm.png", 0.70)
             if btn_result and btn_result[0] is not None:
                 bx, by, _ = btn_result
@@ -2873,38 +2881,18 @@ class MacroWorker(QThread):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(2.0)
-        bag_reopened = self.ensure_inventory_open("[ระบบเก็บเพชร]")
-        if not bag_reopened:
-            self.log_signal.emit("[ระบบเก็บเพชร] ⚠️ เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ กำลังเริ่มระบบฟาร์มและเปิดกระเป๋าใหม่อีกครั้ง...")
-            self.resume_farming_after_inventory()
-            bag_reopened = self.is_inventory_open()
-
+                self.safe_sleep(2.0)
+                
+        # 5. เปิดกระเป๋าอีกครั้งเพื่อขุดต่อ (ปุ่ม T)
+        self.log_signal.emit("[ระบบเก็บเพชร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
+        self.send_game_key("t", duration=0.15)
+        self.safe_sleep(1.0)
         if orig_pos:
             try: win32api.SetCursorPos(orig_pos)
             except Exception: pass
 
-        if stored_successfully and bag_reopened:
-            self.log_signal.emit(
-                "[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!"
-            )
-            return True
-        elif not stored_successfully:
-            self.send_bug_webhook(
-                "เก็บเพชรลงรถไม่สำเร็จ",
-                "ระบบเปิดท้ายรถได้ แต่ไม่พบไอคอนเพชรหรือปุ่มยืนยัน",
-                alert_key="diamond_store_failed",
-                cooldown_seconds=180.0
-            )
-            return False
-        else:
-            self.send_bug_webhook(
-                "เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ",
-                "เก็บเพชรสำเร็จแต่ไม่สามารถเปิดกระเป๋าเพื่อฟาร์มต่อได้",
-                alert_key="diamond_reopen_bag_failed",
-                cooldown_seconds=180.0
-            )
-            return False
+        self.log_signal.emit("[ระบบเก็บเพชร] เสร็จสิ้นกระบวนการเก็บเพชร!")
+        return True
 
     def check_and_run_store_diamonds(self, trigger_storage=False):
         bg_img = self.capture_background(self.hwnd)
