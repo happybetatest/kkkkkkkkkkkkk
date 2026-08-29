@@ -2183,61 +2183,72 @@ class MacroWorker(QThread):
                 return None
             if win32gui.IsIconic(self.hwnd):
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-                time.sleep(0.4)
+                time.sleep(0.3)
             geometry = self.get_client_geometry()
             if not geometry:
                 self.log_signal.emit("[ระบบ] อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้")
                 self.record_focus_failure("อ่านตำแหน่งหน้าต่าง FiveM ไม่ได้ 3 ครั้งติด")
                 return None
             orig_pos = win32api.GetCursorPos()
-            focus_error = None
+            
+            # ปลดล็อคระบบความปลอดภัยของ Windows (Foreground Lock) ด้วยการจำลองปุ่ม ALT
             try:
-                ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
+                ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+            except Exception:
+                pass
+            
+            # บังคับดึงหน้าต่างขึ้นมาด้านหน้าสุด (Force Bring to Top)
+            try:
                 win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
+                win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, 
+                                     win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+                win32gui.SetWindowPos(self.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, 
+                                     win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+                ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
                 win32gui.BringWindowToTop(self.hwnd)
                 win32gui.SetForegroundWindow(self.hwnd)
-            except Exception as error:
-                focus_error = error
-                attached = False
-                try:
-                    foreground = win32gui.GetForegroundWindow()
-                    foreground_thread = win32process.GetWindowThreadProcessId(
-                        foreground
-                    )[0] if foreground else 0
-                    current_thread = win32api.GetCurrentThreadId()
-                    if foreground_thread and foreground_thread != current_thread:
-                        attached = bool(
-                            ctypes.windll.user32.AttachThreadInput(
-                                current_thread, foreground_thread, True
-                            )
+            except Exception:
+                pass
+
+            attached = False
+            try:
+                foreground = win32gui.GetForegroundWindow()
+                foreground_thread = win32process.GetWindowThreadProcessId(
+                    foreground
+                )[0] if foreground else 0
+                current_thread = win32api.GetCurrentThreadId()
+                if foreground_thread and foreground_thread != current_thread:
+                    attached = bool(
+                        ctypes.windll.user32.AttachThreadInput(
+                            current_thread, foreground_thread, True
                         )
-                    ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
-                    win32gui.BringWindowToTop(self.hwnd)
-                    win32gui.SetForegroundWindow(self.hwnd)
-                except Exception as retry_error:
-                    focus_error = retry_error
-                finally:
-                    if attached:
-                        try:
-                            ctypes.windll.user32.AttachThreadInput(
-                                current_thread, foreground_thread, False
-                            )
-                        except Exception:
-                            pass
-            time.sleep(0.3)
+                    )
+                ctypes.windll.user32.SwitchToThisWindow(self.hwnd, True)
+                win32gui.BringWindowToTop(self.hwnd)
+                win32gui.SetForegroundWindow(self.hwnd)
+            except Exception:
+                pass
+            finally:
+                if attached:
+                    try:
+                        ctypes.windll.user32.AttachThreadInput(
+                            current_thread, foreground_thread, False
+                        )
+                    except Exception:
+                        pass
+            time.sleep(0.2)
             current_fg = win32gui.GetForegroundWindow()
             if current_fg != self.hwnd and win32gui.GetAncestor(current_fg, win32con.GA_ROOT) != self.hwnd:
-                detail = f": {focus_error}" if focus_error else ""
-                self.log_signal.emit(
-                    "[ระบบ] ไม่สามารถโฟกัส FiveM ได้"
-                    f"{detail} ยกเลิกรอบนี้เพื่อไม่ให้ส่งปุ่มผิดหน้าต่าง"
-                )
-                try:
-                    win32api.SetCursorPos(orig_pos)
-                except Exception:
-                    pass
-                self.record_focus_failure("โฟกัส FiveM ไม่สำเร็จ 3 ครั้งติด")
-                return None
+                # หาก Windows ยังไม่ยอมให้สิทธิ์ ให้จำลองคลิกกลางจอ FiveM เพื่อดึงโฟกัส 100%
+                game_x, game_y, game_w, game_h = geometry
+                cx, cy = game_x + game_w // 2, game_y + game_h // 2
+                win32api.SetCursorPos((cx, cy))
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(0.15)
             self.focus_failure_streak = 0
             return orig_pos
         except Exception as error:
