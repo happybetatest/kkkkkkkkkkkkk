@@ -2509,75 +2509,67 @@ class MacroWorker(QThread):
         except Exception: pass
 
     def execute_feeding_sequence(self, need_food, need_water):
-        self.is_executing_task = True
-        self.gold_disposal_stage = None
-        self.log_signal.emit(f"[ระบบป้อนอาหาร] 🎯 เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food}) - ระงับกระบวนการอื่นทั้งหมด")
-        orig_pos = None
-        try:
-            try:
-                orig_pos = win32api.GetCursorPos()
-            except Exception:
-                pass
-            # ดึงโฟกัสหน้าต่าง FiveM ก่อน 2 วินาทีตามคำสั่ง
-            self.log_signal.emit("[ระบบป้อนอาหาร] ⏳ กำลังดึงโฟกัสเกม FiveM และรอ 2 วินาที...")
-            if not self.activate_game_window():
-                self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
+        self.log_signal.emit(f"[ระบบป้อนอาหาร] เริ่มกระบวนการกิน (น้ำ: {need_water}, ข้าว: {need_food})...")
+        orig_pos = self.activate_game_window()
+        if orig_pos is None:
+            self.log_signal.emit("[ระบบป้อนอาหาร] ยกเลิกรอบกิน เพราะ FiveM ไม่ได้อยู่ด้านหน้า")
+            return False
+        # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
+        if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
+            self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
+            return False
+        self.safe_sleep(0.5)
+        if not self.is_running or self.is_exiting: return False
+        if not self.send_game_key("x"):
+            return False
+        self.safe_sleep(0.8)
+        if not self.is_running or self.is_exiting: return False
+        if need_water:
+            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
+            if not self.send_game_key("6"):
                 return False
-            time.sleep(2.0)
-            if not self.activate_game_window():
-                return False
-
-            # ปิดกระเป๋าอย่างปลอดภัยด้วยปุ่ม T (ห้ามกด Esc เพราะจะเปิด Pause Menu/Rockstar)
-            if not self.ensure_inventory_closed("[ระบบป้อนอาหาร]"):
-                self.log_signal.emit("[ระบบป้อนอาหาร] ตรวจพบว่าปิดกระเป๋าไม่สำเร็จ ยกเลิกรอบกิน")
-                return False
-            self.safe_sleep(0.5)
+            self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
-            if not self.send_game_key("x"):
+        if need_food:
+            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
+            if not self.send_game_key("7"):
                 return False
-            self.safe_sleep(0.8)
+            self.safe_sleep(8.0)
             if not self.is_running or self.is_exiting: return False
-            if need_water:
-                self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินน้ำ (ช่อง 6)...")
-                if not self.send_game_key("6"):
-                    return False
-                self.safe_sleep(8.0)
-                if not self.is_running or self.is_exiting: return False
-            if need_food:
-                self.log_signal.emit("[ระบบป้อนอาหาร] กำลังกินอาหาร (ช่อง 7)...")
-                if not self.send_game_key("7"):
-                    return False
-                self.safe_sleep(8.0)
-                if not self.is_running or self.is_exiting: return False
-            self.ensure_not_in_pause_menu()
-            self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
-            if not self.hold_game_key("e", 1.5):
-                return False
-            self.safe_sleep(1.5)
-            bg_after = self.capture_background(self.hwnd)
-            if bg_after is not None:
+        self.ensure_not_in_pause_menu()
+        self.log_signal.emit("[ระบบป้อนอาหาร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
+        if not self.hold_game_key("e", 1.5):
+            return False
+        self.safe_sleep(1.5)
+        bg_after = self.capture_background(self.hwnd)
+        if bg_after is not None:
+            h_img, w_img, _ = bg_after.shape
+            scaled_af = self.get_scaled_region(self.auto_farm_region)
+            af_range_x = (scaled_af[0]/w_img, (scaled_af[0]+scaled_af[2])/w_img) if scaled_af else None
+            af_range_y = (scaled_af[1]/h_img, (scaled_af[1]+scaled_af[3])/h_img) if scaled_af else None
+            
+            btn_result = self.find_image(bg_after, "templates/auto_farm.png", 0.85, x_range=af_range_x, y_range=af_range_y)
+            if not btn_result or btn_result[0] is None:
+                # [แก้ไข] ค้นหาปุ่มเริ่มงานทั่วหน้าจอ ป้องกันตั้งพิกัดคลาดเคลื่อน
                 btn_result = self.find_image(bg_after, "templates/auto_farm.png", 0.70)
-                if btn_result and btn_result[0] is not None:
-                    bx, by, bval = btn_result
-                    win32api.SetCursorPos(self.client_to_screen(bx, by))
-                    time.sleep(0.1)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                    time.sleep(0.05)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                    self.safe_sleep(2.0)
-            self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าเพื่อขุดต่อ (ปุ่ม T)...")
-            self.send_game_key("t", duration=0.12)
-            self.safe_sleep(1.0)
-            if orig_pos:
-                try: win32api.SetCursorPos(orig_pos)
-                except: pass
-            self.log_signal.emit("[ระบบป้อนอาหาร] ✅ กินเสร็จเรียบร้อยและกลับสู่โหมดฟาร์ม!")
-            return True
-        finally:
-            self.is_executing_task = False
-            self.gold_disposal_stage = None
-            self.character_idle_since = 0.0
-            self.last_activity_sample_time = time.time() + 15.0
+                
+            if btn_result and btn_result[0] is not None:
+                bx, by, bval = btn_result
+                win32api.SetCursorPos(self.client_to_screen(bx, by))
+                time.sleep(0.1)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                self.safe_sleep(2.0)
+        self.log_signal.emit("[ระบบป้อนอาหาร] กำลังเปิดกระเป๋าอีกครั้ง (ปุ่ม T)...")
+        if not self.send_game_key("t"):
+            return False
+        self.safe_sleep(1.0)
+        if orig_pos:
+            try: win32api.SetCursorPos(orig_pos)
+            except: pass
+        self.log_signal.emit("[ระบบป้อนอาหาร] กินเสร็จเรียบร้อย!")
+        return True
 
     def check_and_run_auto_feed(self):
         bg_img = self.capture_background(self.hwnd)
@@ -2631,18 +2623,37 @@ class MacroWorker(QThread):
         except Exception: pass
 
     def check_diamonds_exceed_30(self, slot_img):
+        """Return True only when the displayed diamond count is at least 30.
+
+        FiveM renders the count as tiny text such as ``31/40``.  The old
+        detector treated the narrowest character as the slash, but the digit
+        ``1`` is actually narrower than ``/``.  That made 31/40 fail.  Split
+        the five glyphs as two numerator digits + slash + ``40`` instead, then
+        distinguish a leading 3/4 from a leading 1/2 by the lower-half stroke.
+        """
         try:
             h, w = slot_img.shape[:2]
             if h < 10 or w < 10:
                 return False
 
+            # Number text "X/Y" is in the top-right area of the slot.
+            # The match centre can move slightly when the diamond artwork is
+            # re-cropped.  Keep enough of the slot's upper half so the count is
+            # not clipped to only its first four pixel rows.
+            # Keep only the thin counter strip.  Using 40% of the slot also
+            # included the bright diamond artwork below the text; its columns
+            # merged with the first digit and made valid 31/40–39/40 fail.
             num_h = max(12, int(h * 0.20))
             num_w = max(12, int(w * 0.68))
             num_area = slot_img[:num_h, w - num_w:]
             gray = cv2.cvtColor(num_area, cv2.COLOR_BGR2GRAY)
 
+            # A slightly lower threshold preserves all seven pixel rows of the
+            # tiny anti-aliased font while the dark inventory background stays
+            # black.
             _, thresh = cv2.threshold(gray, 105, 255, cv2.THRESH_BINARY)
 
+            # Analyze column projection to find character groups.
             col_has = np.any(thresh > 0, axis=0)
             groups = []
             in_g = False
@@ -2658,9 +2669,13 @@ class MacroWorker(QThread):
             if in_g and len(col_has) - start >= 2:
                 groups.append((start, len(col_has)))
 
+            # NN/40 contains five groups.  Do not guess the slash from width:
+            # in 31/40 the "1" is narrower than the slash.
             if len(groups) < 5:
                 return False
 
+            # Use the rightmost five groups so an unrelated bright edge on the
+            # left cannot shift the count characters.
             count_groups = groups[-5:]
             first_x0, first_x1 = count_groups[0]
             first_glyph = thresh[:, first_x0:first_x1]
@@ -2672,6 +2687,9 @@ class MacroWorker(QThread):
                 active_rows[0]:active_rows[-1] + 1, :
             ]
 
+            # For this font, a leading 2 has its lower-middle stroke on the
+            # left.  A leading 3 (and 4) has that stroke on the right.  This
+            # rejects 10/40 and 20/40 while accepting 30/40 through 40/40.
             gh, gw = first_glyph.shape
             lower_y0 = max(0, int(round(gh * 0.52)))
             lower_y1 = max(lower_y0 + 1, int(round(gh * 0.86)))
@@ -2684,260 +2702,200 @@ class MacroWorker(QThread):
             return False
 
     def execute_store_diamonds_sequence(self):
-        self.is_executing_task = True
-        self.is_storing_diamonds = True
-        self.gold_disposal_stage = None
-        self.log_signal.emit("[ระบบเก็บเพชร] 🎯 เริ่มกระบวนการเก็บเพชรลงรถ - ระงับกระบวนการอื่นทั้งหมด")
-        orig_pos = None
-        try:
-            try:
-                orig_pos = win32api.GetCursorPos()
-            except Exception:
-                pass
-            # ดึงโฟกัสหน้าต่าง FiveM ก่อน 2 วินาทีตามคำสั่ง
-            self.log_signal.emit("[ระบบเก็บเพชร] ⏳ กำลังดึงโฟกัสเกม FiveM และรอ 2 วินาที...")
-            if not self.activate_game_window():
-                self.log_signal.emit(
-                    "[ระบบเก็บเพชร] ยกเลิกรอบเก็บ "
-                    "เพราะ FiveM ไม่ได้อยู่ด้านหน้า"
-                )
+        self.log_signal.emit("[ระบบเก็บเพชร] เริ่มกระบวนการเก็บเพชรลงรถ...")
+        orig_pos = self.activate_game_window()
+        if orig_pos is None:
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ยกเลิกรอบเก็บ "
+                "เพราะ FiveM ไม่ได้อยู่ด้านหน้า"
+            )
+            return False
+        if not self.ensure_inventory_closed("[ระบบเก็บเพชร]"):
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ยกเลิกรอบ "
+                "เพราะตรวจว่ายังปิดกระเป๋าไม่ได้"
+            )
+            return False
+        if not self.send_game_key("x"):
+            return False
+        time.sleep(0.8)
+
+        trunk_opened = False
+        stored_successfully = False
+
+        for trunk_attempt in range(1, 4):
+            if self.activate_game_window() is None:
                 return False
-            time.sleep(2.0)
-            if not self.activate_game_window():
+            geometry = self.get_client_geometry()
+            if not geometry:
+                self.log_signal.emit("[ระบบเก็บเพชร] อ่านพื้นที่ FiveM ไม่ได้ จึงไม่กด H")
                 return False
+            game_x, game_y, game_w, game_h = geometry
+            win32api.SetCursorPos((game_x + game_w // 2, game_y + game_h // 2))
+            time.sleep(0.15)
 
-            if not self.ensure_inventory_closed("[ระบบเก็บเพชร]"):
-                self.log_signal.emit(
-                    "[ระบบเก็บเพชร] ยกเลิกรอบ "
-                    "เพราะตรวจว่ายังปิดกระเป๋าไม่ได้"
-                )
-                return False
-            if not self.send_game_key("x"):
-                return False
-            time.sleep(0.8)
+            if trunk_attempt == 1:
+                self.log_signal.emit("[ระบบเก็บเพชร] กำลังกดปุ่ม H เพื่อเปิดเมนูท้ายรถ...")
+            else:
+                self.log_signal.emit(f"[ระบบเก็บเพชร] ยังไม่พบปุ่มท้ายรถ กำลังลองกด H ซ้ำ (รอบที่ {trunk_attempt}/3)...")
 
-            trunk_opened = False
-            stored_successfully = False
+            self.send_game_key("h", duration=0.10)
 
-            for trunk_attempt in range(1, 4):
-                if not self.activate_game_window():
-                    return False
-                geometry = self.get_client_geometry()
-                if not geometry:
-                    self.log_signal.emit("[ระบบเก็บเพชร] อ่านพื้นที่ FiveM ไม่ได้ จึงไม่กด H")
-                    return False
-                game_x, game_y, game_w, game_h = geometry
-                win32api.SetCursorPos((game_x + game_w // 2, game_y + game_h // 2))
-                time.sleep(0.15)
-
-                if trunk_attempt == 1:
-                    self.log_signal.emit("[ระบบเก็บเพชร] กำลังกดปุ่ม H เพื่อเปิดเมนูท้ายรถ...")
-                else:
-                    self.log_signal.emit(f"[ระบบเก็บเพชร] ยังไม่พบปุ่มท้ายรถ กำลังลองกด H ซ้ำ (รอบที่ {trunk_attempt}/3)...")
-
-                self.send_game_key("h", duration=0.20)
-
-                poll_start = time.time()
-                while time.time() - poll_start < 2.5:
-                    time.sleep(0.25)
-                    bg_img = self.capture_background(self.hwnd)
-                    if bg_img is None:
-                        continue
-                    h_img, w_img, _ = bg_img.shape
-                    tr_x, tr_y = self.get_region_ranges(self.trunk_ready_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
-                    btn_ready = self.find_image(bg_img, "templates/trunk_ready.png", 0.60, x_range=tr_x, y_range=tr_y)
-                    if not btn_ready or btn_ready[0] is None:
-                        btn_ready = self.find_image(bg_img, "templates/trunk_ready.png", 0.52)
-
-                    if btn_ready and btn_ready[0] is not None:
-                        bx, by, bval = btn_ready
-                        screen_x, screen_y = self.client_to_screen(bx, by)
-                        self.log_signal.emit(f"[ระบบเก็บเพชร] 🔘 ตรวจพบปุ่มเปิดท้ายรถ (ความแม่นยำ {bval:.2f}) กำลังคลิกเปิด...")
-                        win32api.SetCursorPos((screen_x, screen_y))
-                        time.sleep(0.15)
-                        lParam = win32api.MAKELONG(bx, by)
-                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                        try:
-                            win32gui.SendMessage(self.hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam)
-                        except Exception:
-                            pass
-                        time.sleep(0.08)
-                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                        try:
-                            win32gui.SendMessage(self.hwnd, win32con.WM_LBUTTONUP, 0, lParam)
-                        except Exception:
-                            pass
-                        trunk_opened = True
-                        break
-
-                if trunk_opened:
-                    time.sleep(2.0)
-                    break
-                else:
-                    time.sleep(0.4)
-
-            if not trunk_opened:
-                self.log_signal.emit(
-                    "[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ หลังลองครบ 3 ครั้ง ยกเลิกรอบนี้"
-                )
-                self.ensure_inventory_open("[ระบบเก็บเพชร]")
-                if orig_pos:
-                    try:
-                        win32api.SetCursorPos(orig_pos)
-                    except Exception:
-                        pass
-                return False
-
-            diamond_found = False
-            diamond_result = None
-            self.log_signal.emit("[ระบบเก็บเพชร] 🔍 กำลังรอหน้าต่างท้ายรถและค้นหาเพชร...")
-            
-            trunk_poll_start = time.time()
-            t_fallback_attempted = False
-            while time.time() - trunk_poll_start < 6.0:
-                time.sleep(0.4)
-                bg_trunk = self.capture_background(self.hwnd)
-                if bg_trunk is None:
+            # Polling for trunk_ready button over 2.5s to allow radial UI animation to finish
+            poll_start = time.time()
+            while time.time() - poll_start < 2.5:
+                time.sleep(0.3)
+                bg_img = self.capture_background(self.hwnd)
+                if bg_img is None:
                     continue
-                h_img, w_img, _ = bg_trunk.shape
-                scaled_bag = self.get_scaled_region(self.bag_region)
-                default_x = (scaled_bag[0]/w_img, (scaled_bag[0]+scaled_bag[2])/w_img) if scaled_bag else (0.33, 0.95)
-                default_y = (max(0.20, scaled_bag[1]/h_img), (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.20, 0.95)
-                
-                dia_x, dia_y = self.get_region_ranges(self.diamond_trunk_search_region, w_img, h_img, default_x, default_y)
-                
-                for dia_tpl, dia_thresh in [
-                    ("templates/diamond_trunk.png", 0.65),
-                    ("templates/diamond_icon.png", 0.65),
-                    ("templates/diamond_icon_tight.png", 0.65),
-                    ("templates/diamond_trunk.png", 0.52),
-                    ("templates/diamond_icon.png", 0.52),
-                    ("templates/diamond_icon_tight.png", 0.52),
-                ]:
-                    res = self.find_image(bg_trunk, dia_tpl, dia_thresh, x_range=dia_x, y_range=dia_y)
-                    if not res or res[0] is None:
-                        res = self.find_image(bg_trunk, dia_tpl, dia_thresh)
-                    if res and res[0] is not None:
-                        if res[1] >= int(h_img * 0.20):
-                            diamond_result = res
-                            diamond_found = True
-                            break
-                if diamond_found:
+                h_img, w_img, _ = bg_img.shape
+                tr_x, tr_y = self.get_region_ranges(self.trunk_ready_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
+                btn_ready = self.find_image(bg_img, "templates/trunk_ready.png", 0.60, x_range=tr_x, y_range=tr_y)
+                if not btn_ready or btn_ready[0] is None:
+                    btn_ready = self.find_image(bg_img, "templates/trunk_ready.png", 0.52)
+
+                if btn_ready and btn_ready[0] is not None:
+                    bx, by, bval = btn_ready
+                    screen_x, screen_y = self.client_to_screen(bx, by)
+                    self.log_signal.emit(f"[ระบบเก็บเพชร] 🔘 ตรวจพบปุ่มเปิดท้ายรถ (ความแม่นยำ {bval:.2f}) กำลังคลิก...")
+                    win32api.SetCursorPos((screen_x, screen_y))
+                    time.sleep(0.12)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.06)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    time.sleep(0.15)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.06)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    trunk_opened = True
                     break
 
-            if diamond_found and diamond_result and diamond_result[0] is not None:
+            if trunk_opened:
+                time.sleep(3.0)
+                break
+            else:
+                time.sleep(0.4)
+
+        if not trunk_opened:
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] ไม่พบปุ่มเปิดท้ายรถ หลังลองครบ 3 ครั้ง ยกเลิกรอบนี้"
+            )
+            self.ensure_inventory_open("[ระบบเก็บเพชร]")
+            if orig_pos:
+                try:
+                    win32api.SetCursorPos(orig_pos)
+                except Exception:
+                    pass
+            return False
+
+        bg_trunk = self.capture_background(self.hwnd)
+        if bg_trunk is not None:
+            h_img, w_img, _ = bg_trunk.shape
+            scaled_bag = self.get_scaled_region(self.bag_region)
+            default_x = (scaled_bag[0]/w_img, (scaled_bag[0]+scaled_bag[2])/w_img) if scaled_bag else (0.33, 0.85)
+            default_y = (max(0.24, scaled_bag[1]/h_img), (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.24, 0.90)
+            
+            dia_x, dia_y = self.get_region_ranges(self.diamond_trunk_search_region, w_img, h_img, default_x, default_y)
+            diamond_result = self.find_image(bg_trunk, "templates/diamond_trunk.png", 0.70, x_range=dia_x, y_range=dia_y)
+            if not diamond_result or diamond_result[0] is None:
+                diamond_result = self.find_image(bg_trunk, "templates/diamond_trunk.png", 0.58)
+
+            if diamond_result and diamond_result[0] is not None:
+                if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                    diamond_result = None
+            
+            if diamond_result and diamond_result[0] is not None:
                 dx, dy, dval = diamond_result
                 screen_x, screen_y = self.client_to_screen(dx, dy)
-                self.log_signal.emit(f"[ระบบเก็บเพชร] 💎 ตรวจพบไอคอนเพชร (ความแม่นยำ {dval:.2f}) กำลังย้ายลงท้ายรถ...")
                 self.double_click_at(screen_x, screen_y)
-                
-                all_clicked = False
-                all_poll_start = time.time()
-                while time.time() - all_poll_start < 3.0:
-                    time.sleep(0.3)
-                    bg_pop = self.capture_background(self.hwnd)
-                    if bg_pop is None:
-                        continue
-                    h_img, w_img, _ = bg_pop.shape
+                time.sleep(1.0)
+                bg_pop = self.capture_background(self.hwnd)
+                if bg_pop is not None:
                     at_x, at_y = self.get_region_ranges(self.all_trunk_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
-                    for at_tpl, at_thresh in [
-                        ("templates/all_trunk.png", 0.60),
-                        ("templates/all.png", 0.60),
-                        ("templates/all_trunk.png", 0.50),
-                        ("templates/all.png", 0.50),
-                    ]:
-                        btn_all = self.find_image(bg_pop, at_tpl, at_thresh, x_range=at_x, y_range=at_y)
-                        if not btn_all or btn_all[0] is None:
-                            btn_all = self.find_image(bg_pop, at_tpl, at_thresh)
-                        if btn_all and btn_all[0] is not None:
-                            ax, ay, aval = btn_all
-                            win32api.SetCursorPos(self.client_to_screen(ax, ay))
-                            time.sleep(0.1)
-                            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                            time.sleep(0.05)
-                            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                            all_clicked = True
-                            break
-                    if all_clicked:
-                        break
+                    btn_all = self.find_image(bg_pop, "templates/all_trunk.png", 0.60, x_range=at_x, y_range=at_y)
+                    if not btn_all or btn_all[0] is None:
+                        btn_all = self.find_image(bg_pop, "templates/all_trunk.png", 0.52)
 
-                conf_clicked = False
-                conf_poll_start = time.time()
-                while time.time() - conf_poll_start < 2.5:
-                    time.sleep(0.2)
-                    bg_confirm = self.capture_background(self.hwnd)
-                    if bg_confirm is None:
-                        continue
-                    h_img, w_img, _ = bg_confirm.shape
-                    ct_x, ct_y = self.get_region_ranges(self.confirm_trunk_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
-                    for conf_tpl, conf_thresh in [
-                        ("templates/confirm_trunk.png", 0.60),
-                        ("templates/confirm_trunk.png", 0.50),
-                    ]:
-                        btn_conf = self.find_image(bg_confirm, conf_tpl, conf_thresh, x_range=ct_x, y_range=ct_y)
-                        if not btn_conf or btn_conf[0] is None:
-                            btn_conf = self.find_image(bg_confirm, conf_tpl, conf_thresh)
-                        if btn_conf and btn_conf[0] is not None:
-                            cx, cy, cval = btn_conf
-                            win32api.SetCursorPos(self.client_to_screen(cx, cy))
-                            time.sleep(0.1)
-                            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                            time.sleep(0.05)
-                            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                            conf_clicked = True
-                            break
-                    if conf_clicked:
-                        break
+                    if btn_all and btn_all[0] is not None:
+                        ax, ay, aval = btn_all
+                        win32api.SetCursorPos(self.client_to_screen(ax, ay))
+                        time.sleep(0.1)
+                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                        time.sleep(0.05)
+                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                        time.sleep(0.5)
+                        bg_confirm = self.capture_background(self.hwnd)
+                        if bg_confirm is not None:
+                            ct_x, ct_y = self.get_region_ranges(self.confirm_trunk_search_region, w_img, h_img, (0.0, 1.0), (0.0, 1.0))
+                            btn_conf = self.find_image(bg_confirm, "templates/confirm_trunk.png", 0.60, x_range=ct_x, y_range=ct_y)
+                            if not btn_conf or btn_conf[0] is None:
+                                btn_conf = self.find_image(bg_confirm, "templates/confirm_trunk.png", 0.52)
 
-                time.sleep(1.0)
-                stored_successfully = True
-                self.log_signal.emit("[ระบบเก็บเพชร] ✅ ย้ายเพชรลงท้ายรถเรียบร้อยแล้ว!")
-
-            if not stored_successfully:
-                self.log_signal.emit(
-                    "[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ"
-                )
-            if trunk_opened:
-                self.log_signal.emit("[ระบบเก็บเพชร] กำลังปิดหน้าต่างท้ายรถ (ปุ่ม T)...")
-                self.send_game_key("t", duration=0.12)
-                time.sleep(1.0)
-
-            self.log_signal.emit("[ระบบเก็บเพชร] กลับไปทำอาชีพ (กด E ค้าง 1.5 วินาที)...")
-            if not self.hold_game_key("e", 1.5):
-                return False
-            time.sleep(1.5)
-            bg_final = self.capture_background(self.hwnd)
-            if bg_final is not None:
-                btn_result = self.find_image(bg_final, "templates/auto_farm.png", 0.70)
-                if btn_result and btn_result[0] is not None:
-                    bx, by, _ = btn_result
-                    win32api.SetCursorPos(self.client_to_screen(bx, by))
-                    time.sleep(0.1)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                    time.sleep(0.05)
-                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                    time.sleep(2.0)
-
-            self.activate_game_window()
-            time.sleep(0.2)
-            self.log_signal.emit("[ระบบเก็บเพชร] 💼 กำลังเปิดกระเป๋าเพื่อขุดต่อ (ปุ่ม T)...")
-            self.send_game_key("t", duration=0.12)
-            time.sleep(1.0)
-
-            if orig_pos:
-                try: win32api.SetCursorPos(orig_pos)
-                except Exception: pass
-
+                            if btn_conf and btn_conf[0] is not None:
+                                cx, cy, cval = btn_conf
+                                win32api.SetCursorPos(self.client_to_screen(cx, cy))
+                                time.sleep(0.1)
+                                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                                time.sleep(0.05)
+                                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                                time.sleep(1.5)
+                                stored_successfully = True
+        if not stored_successfully:
             self.log_signal.emit(
-                "[ระบบเก็บเพชร] ✅ เก็บเพชรเสร็จสิ้นและกลับสู่โหมดฟาร์มเรียบร้อย!"
+                "[ระบบเก็บเพชร] ไม่พบเพชรหรือปุ่มยืนยัน จึงยังไม่ได้เก็บเข้ารถ"
+            )
+        if trunk_opened:
+            # ปิดหน้าต่างท้ายรถ/กระเป๋าอย่างปลอดภัย (ไม่กด Esc เปล่าๆ เพื่อไม่ให้เปิด Pause Menu)
+            self.ensure_inventory_closed("[ระบบเก็บเพชร]")
+            time.sleep(0.5)
+            self.ensure_not_in_pause_menu()
+        self.ensure_not_in_pause_menu()
+        if not self.hold_game_key("e", 1.5):
+            return False
+        time.sleep(1.5)
+        bg_final = self.capture_background(self.hwnd)
+        if bg_final is not None:
+            # [แก้ไข] ค้นหาปุ่มเริ่มงานทั่วหน้าจอ ป้องกันตั้งพิกัดคลาดเคลื่อน
+            btn_result = self.find_image(bg_final, "templates/auto_farm.png", 0.70)
+            if btn_result and btn_result[0] is not None:
+                bx, by, _ = btn_result
+                win32api.SetCursorPos(self.client_to_screen(bx, by))
+                time.sleep(0.1)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(2.0)
+        bag_reopened = self.ensure_inventory_open("[ระบบเก็บเพชร]")
+        if not bag_reopened:
+            self.log_signal.emit("[ระบบเก็บเพชร] ⚠️ เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ กำลังเริ่มระบบฟาร์มและเปิดกระเป๋าใหม่อีกครั้ง...")
+            self.resume_farming_after_inventory()
+            bag_reopened = self.is_inventory_open()
+
+        if orig_pos:
+            try: win32api.SetCursorPos(orig_pos)
+            except Exception: pass
+
+        if stored_successfully and bag_reopened:
+            self.log_signal.emit(
+                "[ระบบเก็บเพชร] เก็บเพชรเข้ารถสำเร็จ!"
             )
             return True
-        finally:
-            self.is_storing_diamonds = False
-            self.is_executing_task = False
-            self.gold_disposal_stage = None
-            self.character_idle_since = 0.0
-            self.last_activity_sample_time = time.time() + 15.0
+        elif not stored_successfully:
+            self.send_bug_webhook(
+                "เก็บเพชรลงรถไม่สำเร็จ",
+                "ระบบเปิดท้ายรถได้ แต่ไม่พบไอคอนเพชรหรือปุ่มยืนยัน",
+                alert_key="diamond_store_failed",
+                cooldown_seconds=180.0
+            )
+            return False
+        else:
+            self.send_bug_webhook(
+                "เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ",
+                "เก็บเพชรสำเร็จแต่ไม่สามารถเปิดกระเป๋าเพื่อฟาร์มต่อได้",
+                alert_key="diamond_reopen_bag_failed",
+                cooldown_seconds=180.0
+            )
+            return False
 
     def check_and_run_store_diamonds(self, trigger_storage=False):
         bg_img = self.capture_background(self.hwnd)
@@ -2947,23 +2905,10 @@ class MacroWorker(QThread):
         default_x = (scaled_bag[0]/w_img, (scaled_bag[0]+scaled_bag[2])/w_img) if scaled_bag else (0.33, 0.85)
         default_y = (max(0.24, scaled_bag[1]/h_img), (scaled_bag[1]+scaled_bag[3])/h_img) if scaled_bag else (0.24, 0.90)
         dia_x, dia_y = self.get_region_ranges(self.diamond_search_region, w_img, h_img, default_x, default_y)
-        
-        diamond_result = None
-        for tpl_name, tpl_th in [
-            ("templates/diamond_icon.png", 0.65),
-            ("templates/diamond_icon_tight.png", 0.65),
-            ("templates/diamond_trunk.png", 0.65),
-            ("templates/diamond_icon.png", 0.52),
-        ]:
-            diamond_result = self.find_image(bg_img, tpl_name, tpl_th, x_range=dia_x, y_range=dia_y)
-            if not diamond_result or diamond_result[0] is None:
-                diamond_result = self.find_image(bg_img, tpl_name, tpl_th)
-            if diamond_result and diamond_result[0] is not None:
-                if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
-                    diamond_result = None
-                else:
-                    break
-
+        diamond_result = self.find_image(bg_img, "templates/diamond_icon.png", 0.86, x_range=dia_x, y_range=dia_y)
+        if diamond_result and diamond_result[0] is not None:
+            if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                diamond_result = None
         if diamond_result and diamond_result[0] is not None:
             dx, dy, val = diamond_result
             # Load template to get actual dimensions for proper slot extraction
@@ -3023,74 +2968,59 @@ class MacroWorker(QThread):
         dia_x, dia_y = self.get_region_ranges(
             self.diamond_search_region, w_img, h_img, default_x, default_y
         )
-        
-        diamond_result = None
-        for tpl_name, tpl_th in [
-            ("templates/diamond_icon.png", 0.65),
-            ("templates/diamond_icon_tight.png", 0.65),
-            ("templates/diamond_trunk.png", 0.65),
-            ("templates/diamond_icon.png", 0.52),
-        ]:
-            diamond_result = self.find_image(bg_img, tpl_name, tpl_th, x_range=dia_x, y_range=dia_y)
-            if not diamond_result or diamond_result[0] is None:
-                diamond_result = self.find_image(bg_img, tpl_name, tpl_th)
-            if diamond_result and diamond_result[0] is not None:
-                if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
-                    diamond_result = None
-                else:
-                    break
-
+        diamond_result = self.find_image(
+            bg_img, "templates/diamond_icon.png", 0.86,
+            x_range=dia_x, y_range=dia_y
+        )
+        if diamond_result and diamond_result[0] is not None:
+            if diamond_result[1] < int(h_img * 0.24) and diamond_result[0] > int(w_img * 0.65):
+                diamond_result = None
         elapsed = time.time() - self.diamond_cycle_started_at
         interval_seconds = self.diamond_interval_minutes * 60
         remaining = max(0, int(interval_seconds - elapsed))
-        
-        val = diamond_result[2] if diamond_result else 0.0
         if diamond_result and diamond_result[0] is not None:
-            dx, dy, _ = diamond_result
+            dx, dy, val = diamond_result
             preview_size = 76
             x0, x1 = max(0, dx - preview_size // 2), min(w_img, dx + preview_size // 2)
             y0, y1 = max(0, dy - preview_size // 2), min(h_img, dy + preview_size // 2)
             slot_img = bg_img[y0:y1, x0:x1]
-        else:
-            slot_img = np.zeros((10, 10, 3), dtype=np.uint8)
-
-        if elapsed >= interval_seconds:
-            now = time.time()
-            if now - self.last_diamond_storage_time < 120.0:
-                retry_in = int(
-                    120.0 - (now - self.last_diamond_storage_time)
-                )
+            if elapsed >= interval_seconds:
+                now = time.time()
+                if now - self.last_diamond_storage_time < 120.0:
+                    retry_in = int(
+                        120.0 - (now - self.last_diamond_storage_time)
+                    )
+                    self.diamond_preview_signal.emit(
+                        slot_img,
+                        val,
+                        False,
+                        f"เก็บไม่สำเร็จ รอลองใหม่อีก "
+                        f"{retry_in} วินาที"
+                    )
+                    return
+                self.last_diamond_storage_time = now
                 self.diamond_preview_signal.emit(
-                    slot_img,
-                    val,
-                    False,
-                    f"เก็บไม่สำเร็จ รอลองใหม่อีก {retry_in} วินาที"
+                    slot_img, val, True,
+                    f"ครบ {self.diamond_interval_minutes} นาที กำลังเก็บเพชรเข้ารถ"
                 )
-                return
-            self.last_diamond_storage_time = now
-            self.diamond_preview_signal.emit(
-                slot_img, val, True,
-                f"ครบ {self.diamond_interval_minutes} นาที กำลังเก็บเพชรเข้ารถ"
-            )
-            self.log_signal.emit(
-                f"[ระบบเก็บเพชร] ⏰ ครบกำหนดเวลา {self.diamond_interval_minutes} นาที เริ่มกระบวนการเก็บเพชรลงรถ..."
-            )
-            success = self.execute_store_diamonds_sequence()
-            self.diamond_cycle_started_at = time.time()
-            if success:
-                self.log_signal.emit(
-                    f"[ระบบเก็บเพชร] ขั้นต่อไป: เก็บเข้ารถรอบใหม่ในอีก {self.diamond_interval_minutes} นาที"
-                )
+                if self.execute_store_diamonds_sequence():
+                    self.diamond_cycle_started_at = time.time()
+                    self.log_signal.emit(
+                        f"[ระบบเก็บเพชร] ขั้นต่อไป: "
+                        f"เก็บเข้ารถรอบใหม่ในอีก "
+                        f"{self.diamond_interval_minutes} นาที"
+                    )
             else:
-                self.log_signal.emit(
-                    f"[ระบบเก็บเพชร] รอบนี้เก็บไม่สำเร็จ จะลองใหม่อีก {self.diamond_interval_minutes} นาที (หรือสั่ง !store ทาง Discord)"
+                self.diamond_preview_signal.emit(
+                    slot_img, val, False,
+                    f"โหมดจับเวลา: เหลือ {remaining // 60}:{remaining % 60:02d} นาที"
                 )
         else:
-            status_text = f"โหมดจับเวลา: เหลือ {remaining // 60}:{remaining % 60:02d} นาที"
-            if not diamond_result or diamond_result[0] is None:
-                status_text += " (ยังไม่พบรูปเพชรในกระเป๋า)"
+            val = diamond_result[2] if diamond_result else 0.0
             self.diamond_preview_signal.emit(
-                slot_img, val, False, status_text
+                np.zeros((10, 10, 3), dtype=np.uint8),
+                val, False,
+                f"โหมดจับเวลา: ยังไม่พบเพชร (เหลือ {remaining // 60}:{remaining % 60:02d} นาที)"
             )
 
     def check_and_run_no_car_full_mode(self):
