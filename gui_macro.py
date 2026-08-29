@@ -2354,12 +2354,14 @@ class MacroWorker(QThread):
         x_range = (x_start / w_img, x_end / w_img)
         y_range = (scan_y_start / h_img, y_end / h_img)
         for template_path, threshold in (
-            ("templates/all.png", 0.58),
-            ("templates/destroy.png", 0.58),
-            ("templates/gold_ore.png", 0.65),
-            ("templates/diamond_icon.png", 0.68),
-            ("templates/gold.png", 0.65),
-            ("templates/diamond_trunk.png", 0.65),
+            ("templates/diamond_icon.png", 0.50),
+            ("templates/diamond_icon_tight.png", 0.50),
+            ("templates/diamond_trunk.png", 0.50),
+            ("templates/gold_ore.png", 0.50),
+            ("templates/gold.png", 0.50),
+            ("templates/destroy.png", 0.50),
+            ("templates/all.png", 0.50),
+            ("templates/all_trunk.png", 0.50),
         ):
             result = self.find_image(
                 bg_img,
@@ -2917,11 +2919,14 @@ class MacroWorker(QThread):
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                     time.sleep(0.05)
                     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                    time.sleep(2.0)
+                    time.sleep(2.5)
+            self.activate_game_window()
+            time.sleep(0.2)
+            self.log_signal.emit("[ระบบเก็บเพชร] 💼 กำลังเปิดกระเป๋าเพื่อกลับสู่โหมดฟาร์ม...")
             bag_reopened = self.ensure_inventory_open("[ระบบเก็บเพชร]")
             if not bag_reopened:
-                self.log_signal.emit("[ระบบเก็บเพชร] ⚠️ เปิดกระเป๋าหลังเก็บเพชรไม่สำเร็จ กำลังเริ่มระบบฟาร์มและเปิดกระเป๋าใหม่อีกครั้ง...")
-                self.resume_farming_after_inventory()
+                self.send_game_key("t", duration=0.12)
+                time.sleep(1.2)
                 bag_reopened = self.is_inventory_open()
 
             if orig_pos:
